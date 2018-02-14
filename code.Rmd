@@ -77,88 +77,28 @@ genus_selected_mat <- genus_mat[,ind_lowest_iqr_sd==FALSE]
 dim(genus_selected_mat)    # rows=1005 subjects, cols=290 genera with SD >= lowest quartile
 ```
 
-2.1. Create genus data by removing taxonomic ranks.
+##2.1. Create genus data by removing taxonomic ranks.
 ```{r}
 otu_tbl <- genus_tbl %>% select(c(2:7)) 
 rownames(otu_tbl) <- genus_tbl$X1 # Genus(OTU code) as rowname
 View(otu_tbl)
 ```
 
-
-
-
-3. Importing the metadata
+## 3. Importing the metadata
 ```{r Import metadata, include=FALSE}
 library("readstata13")
-metadata1 <- read.dta13("./data/m35 _metadata_2018january_n1005.dta")
-dim(metadata1) # rows=1005 subjects, col = 174 variables
+metadata <- read.dta13("./data/m35 _metadata_2018january_n1005.dta")
+dim(metadata) # rows=1005 subjects, col = 174 variables
+metadata_pam <- metadata %>% arrange(., by=SampleID_NPA)
 
 # Making sure if the order of sample ID:s matches across the datasets
 metadata$SampleID_NPA == rownames(microbiota_tbl) # Contain same sampleIDs in same order
 unique(metadata$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
+
 ```
 
 
-
-
-4. Clustering (as an exploratory analysis)
-4.1. K-means
-```{r Clustering with k-means, include=FALSE}
-        set.seed(1)
-    # Do k-means clustering with three clusters, repeat 20 times (nstart)
-        metabolomics_km <- kmeans(metabolon_n140_tbl, 
-                                  centers=5,   # Number of cluster = k
-                                  nstart=20)  # Number of random sets
-        table(metabolomics_km$cluster)
-        
-    # Scree plot    
-        # Initialise ratio_ss 
-            ratio_ss <- rep(0, 10)
-        for (k in 1:10) {
-            metabolomics_km <- kmeans(metabolon_n140_tbl, k, nstart = 20)
-            ratio_ss[k] <- metabolomics_km$tot.withinss / metabolomics_km$totss
-            }
-        plot(ratio_ss, type="b",  xlab="k")   # where is the elbow -- best?
-```        
-
-
-4.2. Hierarchical clustering
-```{r Hierarchical clustering, include=FALSE}
- metabolomics_dist <- dist(metabolon_n140_tbl, method = "manhattan")   # Develop distance
-
- metabolomics_complete <- hclust(metabolomics_dist, method="complete") # Develop tree
-     memb_complete <- cutree(metabolomics_complete, 4) # Apply cutree() to run_complete:
-     plot(metabolomics_complete)   # Apply plot() on run_complete to draw the dendrogram
-     rect.hclust(metabolomics_complete, k=4, border=2:6) # Apply rect.hclust() on run_complete to draw the boxes
-```
-
-
-4.3. PAM (cluster package)
-```{r PAM clustering}
-  metabolomics_pam4 <- pam(metabolon_n140_tbl, # data.frame, matrix or dissimilarity matrix
-                            k=4,
-                            diss=FALSE,  #TRUE if dissimilarity matrix; If FALSE, then x will be considered as a matrix of observations by variables.
-                            metric = "manhattan" # available options are "euclidean" and "manhattan".
-                            )
- #glimpse(metabolomics_pam4)     # list
- table(metabolomics_pam4[["clustering"]])  # Check the third object of the list = clustering
-  pam_output <- tbl_df(metabolomics_pam4[["clustering"]]) %>%  # Get the clustering (with study ID) as tbl from the list
-  rename (pam4_metabolomics = value)              # Give the new variable name, "pam4_metabolomics"
-  pam_output$pam4_metabolomics <- as.factor(pam_output$pam4_metabolomics) # Change from integer
-  pam_output$study_id <- attr(metabolomics_pam4[["clustering"]], "names") %>% as.integer  # Assign study ID back by using "attr"
-#View(pam_output)
-```
-
-4.4.Merging the cluster data to the metadata
-```{r Merge cluster data with metadata}
-    metadata_pam <- metadata %>%
-                    inner_join(pam_output, by="study_id")
-            dim(metadata_pam)
-    #names(metadata_pam)
-```
-
-
-5. Recoding the metadata variables 
+## 4. Recoding the metadata variables 
 ```{r Re-code metadata, message=FALSE}
 # Covariates    
     # Age
