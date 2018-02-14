@@ -1,0 +1,1216 @@
+---
+title: "Serum 25OHD, NPA microbiome, and Severity in MARC-35"
+author: "Kohei Hasegawa, MD, MPH"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+version
+```
+
+## Analysis
+1. Uploading the packages
+```{r Upload packages, message=FALSE}
+library("tidyverse")
+library("cluster")
+library("purrr")
+library("tableone")
+library("gplots")
+library("lme4")
+
+```
+
+2. Uploading the metabolome dataset.  As the dataset is based on two batches, the data have been sclaed and imputed by Metabolon.
+```{r Upload the metabolomics dataset}
+metabolon_n140_merged_tbl <- read_csv("../Data/merged/merged_data_serum_metab_averaged_n140.csv")
+  dim(metabolon_n140_merged_tbl)   # Row = subject ; Col = metabolite
+```
+```{r Change to a matrix}
+metabolon_n140_merged_mat <- as.matrix(metabolon_n140_merged_tbl [,-1]) # Remove study ID
+  rownames(metabolon_n140_merged_mat) <- metabolon_n140_merged_tbl$study_id # Study ID as the rowname  
+  dim(metabolon_n140_merged_mat)   
+```
+
+Based on the study aim, 69 xenobiotics and 222 unknown compounds were removed.  
+```{r Remove xenobiotics and unknown compounds}
+# First, upload the file that has metabolites' names
+  compound_id <- read_csv("../Data/merged/compounds_only_merged_serum_metabolome.csv")     
+    table(compound_id$super_pathway, useNA="ifany")
+    compound_id %>% select (-biochemical) %>% filter(!is.na(sub_pathway)) %>% 
+                group_by(super_pathway) %>% 
+                summarize (unique_sub = n_distinct(sub_pathway))  # Number of subpathway
+    
+# Next, index these
+  index_xenobiotics_unknown <- compound_id$super_pathway=="Xenobiotics" | is.na(compound_id$super_pathway)
+  sum(index_xenobiotics_unknown)  # 291 xenobiotics + unknown compounds
+# Prep for indexing            
+  t_metabolon_n140_merged_mat <- t(metabolon_n140_merged_mat)  
+# Remove 291 xenobiotics + unknown compounds
+  metabolon_n140_merged_selected_mat <- t(t_metabolon_n140_merged_mat[index_xenobiotics_unknown==FALSE,])
+    dim(metabolon_n140_merged_selected_mat)  
+```
+
+
+Optional: Codes that remove the metabolites with lowest variability (the lowerst quartile).  This was not used.
+```{r Remove metabolites with low variability, eval=FALSE}
+  sd_metabolite <- metabolon_n140_merged_selected_mat %>% apply(., 2, sd) # Calculte SD for each metabolite
+    q_sd <- quantile(sd_metabolite) 
+    q_sd[2]
+  ind_lowest_iqr_sd <- sd_metabolite < q_sd[2] #indexing the lowest quartile
+  
+  metabolon_n140_merged_selected_mat <- metabolon_n140_merged_selected_mat[,ind_lowest_iqr_sd==FALSE]
+    dim(metabolon_n140_merged_selected_mat)      
+            
+```
+
+Optional: This code was not used because the current dataset is already impurted and scaled.
+```{r Manual imputaion, transormation, & scaling, eval=FALSE}
+  t_metabolon_n140_merged_mat <- t(metabolon_n140_merged_mat)    
+        dim(t_metabolon_n140_merged_mat)
+# Imputation                  
+  replacezero <- function(x) "[<-"(x, !x | is.na(x), min(x[x > 0],
+              na.rm = TRUE) / 1)   
+  t_metabolon_n140_merged_mat <- apply(t_metabolon_n140_merged_mat, 
+                                       1, replacezero) 
+  dim(t_metabolon_n140_merged_mat) 
+
+#Log2-transformation
+  metabolon_n140_merged_mat <- t(log(t_metabolon_n140_merged_mat, base=2))              
+            
+# Scaling (pareto vs. auto) -- mixOmics default -- scaling = TRUE
+   t_metabolon_n140_merged_mat <- t(metabolon_n140_merged_mat)
+        dim(t_metabolon_n140_merged_mat)  # Transpose for scaling
+   paretoscale <- function(z) {
+            rowmean <- apply(z, 1, mean)        # row means
+            rowsd <- apply(z, 1, sd)            # row standard deviation
+            rowsqrtsd <- sqrt(rowsd)            # sqrt of sd
+            rv <- sweep(z, 1, rowmean,"-")      # mean center
+            rv <- sweep(rv, 1, rowsqrtsd, "/")  # divide by sqrtsd
+            return(rv)
+            }    
+    autoscale <- function(z) {
+            rowmean <- apply(z, 1, mean)        # row means
+            rowsd <- apply(z, 1, sd)            # row standard deviation
+            rv <- sweep(z, 1, rowmean,"-")      # mean center
+            rv <- sweep(rv, 1, rowsd, "/")      # divide by sd
+            return(rv)
+            } 
+   metabolon_n140_merged_mat <- t(paretoscale(t_metabolon_n140_merged_mat))
+       dim(t_metabolon_n140_merged_mat)
+       
+```
+
+The metabolome data are changed to the tbl format.
+```{r}
+  metabolon_n140_tbl <- tbl_df(metabolon_n140_merged_selected_mat)  
+    rownames(metabolon_n140_tbl) <- rownames(metabolon_n140_merged_selected_mat)        
+    dim(metabolon_n140_tbl)
+ # names(metabolon_n140_tbl)   
+```
+
+3. Importing the metadata
+```{r Import metadata, include=FALSE}
+    ID_data_n140  <- read_csv("../Data/merged/id_merged_n140.csv")
+        #class(ID_data_n140)
+        #glimpse(ID_data_n140)
+    metadata_n1016 <- read_csv("../Data/data_m35/m35_metadata_n1016_2017july24.csv")
+        #class(metadata_n1016)
+    pam_data_n1005 <- read_csv("../Data/data_m35/PAMclusters_m35_n1005.csv")    
+        #glimpse(pam_data_n1005)
+##  Restrict to n=140 + add PAM data + delete unnecessary variables
+    metadata <- metadata_n1016 %>%
+                 inner_join(ID_data_n140, by="study_id") %>%
+                 select (-c(acute_cohort, enrolled_subj, SourceID:DateCollected_month_NPA, 
+                               collection_season_INDX:collection_season_NPA, 
+                               inpatient_hfo:inpatient_hel,
+                               RSV_CLRN:RV_CT_CLRN, mo30_cat_0to1:mo30_farmanimal_0to1)) %>%
+                 left_join(pam_data_n1005, by="study_id") 
+     dim(metadata)
+```
+
+Making sure if the order of study id matches across the datasets       
+```{r Sanity check}
+    metadata$study_id %in% rownames(metabolon_n140_tbl)
+```
+
+
+4. Clustering (as an exploratory analysis)
+4.1. K-means
+```{r Clustering with k-means, include=FALSE}
+        set.seed(1)
+    # Do k-means clustering with three clusters, repeat 20 times (nstart)
+        metabolomics_km <- kmeans(metabolon_n140_tbl, 
+                                  centers=5,   # Number of cluster = k
+                                  nstart=20)  # Number of random sets
+        table(metabolomics_km$cluster)
+        
+    # Scree plot    
+        # Initialise ratio_ss 
+            ratio_ss <- rep(0, 10)
+        for (k in 1:10) {
+            metabolomics_km <- kmeans(metabolon_n140_tbl, k, nstart = 20)
+            ratio_ss[k] <- metabolomics_km$tot.withinss / metabolomics_km$totss
+            }
+        plot(ratio_ss, type="b",  xlab="k")   # where is the elbow -- best?
+```        
+
+
+4.2. Hierarchical clustering
+```{r Hierarchical clustering, include=FALSE}
+ metabolomics_dist <- dist(metabolon_n140_tbl, method = "manhattan")   # Develop distance
+
+ metabolomics_complete <- hclust(metabolomics_dist, method="complete") # Develop tree
+     memb_complete <- cutree(metabolomics_complete, 4) # Apply cutree() to run_complete:
+     plot(metabolomics_complete)   # Apply plot() on run_complete to draw the dendrogram
+     rect.hclust(metabolomics_complete, k=4, border=2:6) # Apply rect.hclust() on run_complete to draw the boxes
+```
+
+
+4.3. PAM (cluster package)
+```{r PAM clustering}
+  metabolomics_pam4 <- pam(metabolon_n140_tbl, # data.frame, matrix or dissimilarity matrix
+                            k=4,
+                            diss=FALSE,  #TRUE if dissimilarity matrix; If FALSE, then x will be considered as a matrix of observations by variables.
+                            metric = "manhattan" # available options are "euclidean" and "manhattan".
+                            )
+ #glimpse(metabolomics_pam4)     # list
+ table(metabolomics_pam4[["clustering"]])  # Check the third object of the list = clustering
+  pam_output <- tbl_df(metabolomics_pam4[["clustering"]]) %>%  # Get the clustering (with study ID) as tbl from the list
+  rename (pam4_metabolomics = value)              # Give the new variable name, "pam4_metabolomics"
+  pam_output$pam4_metabolomics <- as.factor(pam_output$pam4_metabolomics) # Change from integer
+  pam_output$study_id <- attr(metabolomics_pam4[["clustering"]], "names") %>% as.integer  # Assign study ID back by using "attr"
+#View(pam_output)
+```
+
+4.4.Merging the cluster data to the metadata
+```{r Merge cluster data with metadata}
+    metadata_pam <- metadata %>%
+                    inner_join(pam_output, by="study_id")
+            dim(metadata_pam)
+    #names(metadata_pam)
+```
+
+
+5. Recoding the metadata variables 
+```{r Re-code metadata, message=FALSE}
+# Covariates    
+    # Age
+        metadata_pam$Agecat2 <-NA
+        metadata_pam$Agecat2[metadata_pam$Age_mo>=0 & metadata_pam$Age_mo <6] <- 1
+        metadata_pam$Agecat2[metadata_pam$Age_mo>=6] <- 2
+            metadata_pam$Agecat2 <- as.factor(metadata_pam$Agecat2)
+            table(metadata_pam$Agecat2, useNA="ifany"); class(metadata_pam$Agecat2)   
+        metadata_pam$Agecat3 <-NA
+        metadata_pam$Agecat3[metadata_pam$Age_mo>=0 & metadata_pam$Age_mo <2] <- 1
+        metadata_pam$Agecat3[metadata_pam$Age_mo>=2 & metadata_pam$Age_mo <6] <- 2
+        metadata_pam$Agecat3[metadata_pam$Age_mo>=6] <- 3
+            metadata_pam$Agecat3 <- as.factor(metadata_pam$Agecat3)
+            table(metadata_pam$Agecat3, useNA="ifany"); class(metadata_pam$Agecat3)           
+    # Sex
+        metadata_pam$female = factor(metadata_pam$intake_sex,
+                               levels = c(1,2),
+                               labels = c("male", "female")) 
+            table(metadata_pam$female, useNA="ifany"); class(metadata_pam$female)   
+    # Race/ethnicity
+        metadata_pam$raceethn <- as.factor(metadata_pam$raceethn)
+            table(metadata_pam$raceethn, useNA="ifany"); class(metadata_pam$raceethn)  
+    # Parental asthma (missing n=1)
+        metadata_pam$parent_asthma = factor(metadata_pam$parent_asthma)
+            table(metadata_pam$parent_asthma, useNA="ifany"); class(metadata_pam$parent_asthma)  
+    # Maternal smoke  (missing n=1)
+        metadata_pam$mata_smoke = factor(metadata_pam$mata_smoke)
+            table(metadata_pam$mata_smoke, useNA="ifany"); class(metadata_pam$mata_smoke)          
+    # Fall birth (Sep, Oct, Nov) -- https://www.ncbi.nlm.nih.gov/pubmed/18776151
+        metadata_pam$birth_season <- factor(metadata_pam$birth_season)
+            table(metadata_pam$birth_season, useNA="ifany"); class(metadata_pam$birth_season) 
+        metadata_pam$fall_birth <- ifelse(metadata_pam$birth_season==3, TRUE, FALSE)
+            table(metadata_pam$fall_birth, useNA="ifany"); class(metadata_pam$fall_birth)
+    # Prematurity
+        metadata_pam$premature37 <- factor(metadata_pam$premature37)
+            table(metadata_pam$premature37, useNA="ifany"); class(metadata_pam$premature37)
+    # Birth mode (1 missing)
+        metadata_pam$mata_delivery <- factor(metadata_pam$mata_delivery)
+            table(metadata_pam$mata_delivery, useNA="ifany"); class(metadata_pam$mata_delivery)
+    # low birth wt  < 5 lb
+        metadata_pam$intake_child_weight_born <- factor(metadata_pam$intake_child_weight_born)
+            table(metadata_pam$intake_child_weight_born, useNA="ifany");          class(metadata_pam$intake_child_weight_born)    
+        metadata_pam$low_birth_wt <-NA
+        metadata_pam$low_birth_wt[metadata_pam$intake_child_weight_born==1] <-TRUE
+        metadata_pam$low_birth_wt[metadata_pam$intake_child_weight_born==2] <-TRUE
+        metadata_pam$low_birth_wt[metadata_pam$intake_child_weight_born==3] <-FALSE
+        metadata_pam$low_birth_wt[metadata_pam$intake_child_weight_born==4] <-FALSE    
+            table(metadata_pam$low_birth_wt, useNA="ifany"); class(metadata_pam$low_birth_wt)
+    # Previous breathing
+        metadata_pam$prev_breathingprob2 <-NA
+        metadata_pam$prev_breathingprob2[metadata_pam$prev_breathingprob==0] <-FALSE
+        metadata_pam$prev_breathingprob2[metadata_pam$prev_breathingprob==1] <-TRUE
+        metadata_pam$prev_breathingprob2[metadata_pam$prev_breathingprob==2] <-TRUE
+            table(metadata_pam$prev_breathingprob2, useNA="ifany"); class(metadata_pam$prev_breathingprob2) 
+    # H/o eczema 
+        metadata_pam$intake_eczema_history <- factor(metadata_pam$intake_eczema_history)
+            table(metadata_pam$intake_eczema_history, useNA="ifany"); class(metadata_pam$intake_eczema_history)   
+    #Post-natal smoking exposure
+        metadata_pam$intake_smoke <- factor(metadata_pam$intake_smoke)    
+            table(metadata_pam$intake_smoke, useNA="ifany"); class(metadata_pam$intake_smoke) 
+    # breastmilk_mostly_3mo (10 missing)
+        metadata_pam$breastmilk_mostly_3mo <- factor(metadata_pam$breastmilk_mostly_3mo)    
+            table(metadata_pam$breastmilk_mostly_3mo, useNA="ifany"); class(metadata_pam$breastmilk_mostly_3mo)            
+            
+        metadata_pam$breastmilk_mostly_3mo9 <-NA
+        metadata_pam$breastmilk_mostly_3mo9[metadata_pam$breastmilk_mostly_3mo==0] <-0
+        metadata_pam$breastmilk_mostly_3mo9[metadata_pam$breastmilk_mostly_3mo==1] <-1
+        metadata_pam$breastmilk_mostly_3mo9[is.na(metadata_pam$breastmilk_mostly_3mo)]<-9        
+            metadata_pam$breastmilk_mostly_3mo9 <- as.factor(metadata_pam$breastmilk_mostly_3mo9)
+            table(metadata_pam$breastmilk_mostly_3mo9, useNA="ifany"); class(metadata_pam$breastmilk_mostly_3mo9) 
+          
+    # Corticosteroid use before the index hospitalization
+        metadata_pam$corticosteroids_life <- as.factor(metadata_pam$corticosteroids_life)   
+            table(metadata_pam$corticosteroids_life, useNA="ifany"); class(metadata_pam$corticosteroids_life)          
+    # Corticosteroid use during the pre-hospitalization visit
+        metadata_pam$corticosteroids_pre <- as.factor(metadata_pam$corticosteroids_pre)   
+            table(metadata_pam$corticosteroids_pre, useNA="ifany"); class(metadata_pam$corticosteroids_pre)         
+            
+    # Wt at presentation
+                    summary(metadata_pam$intch_weight)
+        metadata_pam$intch_weight_cat2 = 
+                    ifelse(metadata_pam$intch_weight<5.95,  "Low",
+                    ifelse(metadata_pam$intch_weight>=5.95, "High",
+                    NA))
+            metadata_pam$intch_weight_cat2 <- as.factor(metadata_pam$intch_weight_cat2)
+            table(metadata_pam$intch_weight_cat2, useNA="ifany"); class(metadata_pam$intch_weight_cat2)
+            
+            
+    # sIgE (food or aero)
+        metadata_pam$IgE_any_food <- as.factor(metadata_pam$IgE_any_food)   
+            table(metadata_pam$IgE_any_food, useNA="ifany"); class(metadata_pam$IgE_any_food)  
+        metadata$aeroallergens_atopy <- as.factor(metadata$aeroallergens_atopy)   
+            table(metadata_pam$aeroallergens_atopy, useNA="ifany"); class(metadata_pam$aeroallergens_atopy)  
+        metadata_pam$IgE_cat2 <- ifelse(metadata_pam$IgE_any_food==1 | metadata_pam$aeroallergens_atopy==1, TRUE,
+                                    FALSE)
+            table(metadata_pam$IgE_cat2, useNA="ifany"); class(metadata_pam$IgE_cat2) 
+    # Virology        
+        metadata_pam$RSVonly_NPA <- as.factor(metadata_pam$RSVonly_NPA)   
+            table(metadata_pam$RSVonly_NPA, useNA="ifany"); class(metadata_pam$RSVonly_NPA)   
+        metadata_pam$RVonly_NPA <- as.factor(metadata_pam$RVonly_NPA)   
+            table(metadata_pam$RVonly_NPA, useNA="ifany"); class(metadata_pam$RVonly_NPA)         
+        metadata_pam$RSVRV_NPA <- as.factor(metadata_pam$RSVRV_NPA)   
+            table(metadata_pam$RSVRV_NPA, useNA="ifany"); class(metadata_pam$RSVRV_NPA)    
+        metadata_pam$OTHERvirus <-NA
+            metadata_pam$OTHERvirus[metadata_pam$RSVonly_NPA==1 | metadata_pam$RVonly_NPA==1 | metadata_pam$RSVRV_NPA==1] <-FALSE    
+            metadata_pam$OTHERvirus[metadata_pam$RSVonly_NPA!=1 & metadata_pam$RVonly_NPA!=1 & metadata_pam$RSVRV_NPA!=1] <-TRUE
+            table(metadata_pam$OTHERvirus, useNA="ifany"); class(metadata_pam$OTHERvirus) 
+        metadata_pam$RSVA_NPA <- as.factor(metadata_pam$RSVA_NPA)   
+            table(metadata_pam$RSVA_NPA, useNA="ifany"); class(metadata_pam$RSVA_NPA)  
+        metadata_pam$RSVB_NPA <- as.factor(metadata_pam$RSVB_NPA)   
+            table(metadata_pam$RSVB_NPA, useNA="ifany"); class(metadata_pam$RSVB_NPA)
+        metadata_pam$RSV_NPA <- as.factor(metadata_pam$RSV_NPA)   
+            table(metadata_pam$RSV_NPA, useNA="ifany"); class(metadata_pam$RSV_NPA)   
+        metadata_pam$RV_NPA <- as.factor(metadata_pam$RV_NPA)   
+            table(metadata_pam$RV_NPA, useNA="ifany"); class(metadata_pam$RV_NPA)              
+    # O2 sat (3 missing)
+        metadata_pam$o2sat_initial <- as.factor(metadata_pam$o2sat_initial)   
+            table(metadata_pam$o2sat_initial, useNA="ifany"); class(metadata_pam$o2sat_initial)  
+    # Severity
+        metadata_pam$CPAPintubate <- as.factor(metadata_pam$CPAPintubate)   
+            table(metadata_pam$CPAPintubate, useNA="ifany"); class(metadata_pam$CPAPintubate)   
+        metadata_pam$inpatient_location___3 <- as.factor(metadata_pam$inpatient_location___3)   
+            table(metadata_pam$inpatient_location___3, useNA="ifany"); class(metadata_pam$inpatient_location___3)   
+        metadata_pam$IntensiveTreatment <- as.factor(metadata_pam$IntensiveTreatment)   
+            table(metadata_pam$IntensiveTreatment, useNA="ifany"); class(metadata_pam$IntensiveTreatment) 
+        metadata_pam$LOS_dys <- as.integer(metadata_pam$LOS_dys)   
+            summary(metadata_pam$LOS_dys, useNA="ifany"); class(metadata_pam$LOS_dys)      
+        metadata_pam$LOS3dys <- as.factor(metadata_pam$LOS3dys)   
+            table(metadata_pam$LOS3dys, useNA="ifany"); class(metadata_pam$LOS3dys)   
+            
+    # eos_4perc  (16 missing)
+        metadata_pam$eos_4perc <- as.factor(metadata_pam$eos_4perc)   
+            table(metadata_pam$eos_4perc, useNA="ifany"); class(metadata_pam$eos_4perc)          
+    # Microbiota clusters (PAM 4)
+        table(metadata_pam$PAM4_m35, useNA="ifany")         
+    # Orianne's clusters
+        table(metadata_pam$LCA3ABC, useNA="ifany"); class(metadata_pam$LCA3ABC)      
+    # site
+        metadata_pam$site <- factor(metadata_pam$site)
+            table(metadata_pam$site, useNA="ifany"); class(metadata_pam$site)  
+    # Rec wheezing
+          metadata_pam$recurrent_wheeze_sleep_36mo_cat <- factor(metadata_pam$recurrent_wheeze_sleep_36mo)
+            table(metadata_pam$recurrent_wheeze_sleep_36mo_cat, useNA="ifany"); class(metadata_pam$recurrent_wheeze_sleep_36mo_cat)         
+          metadata_pam$ICSuse_36mo_cat <- factor(metadata_pam$ICSuse_36mo)
+            table(metadata_pam$ICSuse_36mo_cat, useNA="ifany"); class(metadata_pam$ICSuse_36mo_cat)   
+# Vitamin-D related compounds            
+    # Total 25OHD
+        summary(metadata_pam$vitd25_ngml)
+        metadata_pam$vitd25_ngml_cat2 = 
+                    ifelse(metadata_pam$vitd25_ngml<24.8,  "Low (<24.8 ng/ml)",
+                    ifelse(metadata_pam$vitd25_ngml>=24.8, "High (>=24.8 ng/ml)",
+                    NA))
+            metadata_pam$vitd25_ngml_cat2 <- as.factor(metadata_pam$vitd25_ngml_cat2)
+            table(metadata_pam$vitd25_ngml_cat2, useNA="ifany"); class(metadata_pam$vitd25_ngml_cat2)
+    # Bioavailable vitD
+        summary(metadata_pam$bioD)  # Unit = ng (same as vitd25)
+                metadata_pam$bioD2 = 
+                    ifelse(metadata_pam$bioD<3.8,  "Low (<3.8 ng/ml)",
+                    ifelse(metadata_pam$bioD>=3.8, "High (>=3.8 ng/ml)",
+                    NA))
+            metadata_pam$bioD2 <- as.factor(metadata_pam$bioD2)
+            table(metadata_pam$bioD2, useNA="ifany"); class(metadata_pam$bioD2)
+    # Free vitD -- dichotomize vs. quartiles -- Unit = pg (10^-12)
+        summary(metadata_pam$freeD)  
+            metadata_pam$freeD2 = 
+                    ifelse(metadata_pam$freeD<11.1,  "Low (<11.1 pg/ml)",
+                    ifelse(metadata_pam$freeD>=11.1, "High (>=11.1 pg/ml)",
+                    NA))
+                metadata_pam$freeD2 <- as.factor(metadata_pam$freeD2)
+                    table(metadata_pam$freeD2, useNA="ifany"); class(metadata_pam$freeD2)
+            metadata_pam$freeD4 = 
+                    ifelse(metadata_pam$freeD< 8.2, "Lowest",
+                    ifelse(metadata_pam$freeD>=8.2  & metadata_pam$freeD<11.1, "Second lowest",
+                    ifelse(metadata_pam$freeD>=11.1 & metadata_pam$freeD<19.5, "Second highest",
+                    ifelse(metadata_pam$freeD>=19.5, "Highest",
+                    NA))))
+                metadata_pam$freeD4 <- as.factor(metadata_pam$freeD4)
+                table(metadata_pam$freeD4, useNA="ifany"); class(metadata_pam$freeD4)
+    # D-binding protein (DBP)
+        summary(metadata_pam$dbp_ugml)  # Unit = microG 
+                metadata_pam$dbp2 = 
+                    ifelse(metadata_pam$dbp_ugml<142.3,  "Low (<142.3 ug/ml)",
+                    ifelse(metadata_pam$dbp_ugml>=142.3, "High (>=142.3 ug/ml)",
+                    NA))
+            metadata_pam$dbp2 <- as.factor(metadata_pam$dbp2)
+            table(metadata_pam$dbp2, useNA="ifany"); class(metadata_pam$dbp2)      
+```
+                        
+6. Exploratory analysis: Correlations of total 25OHD with free and bioavailable 25OHD
+```{r Correlation with total with bioavailable}
+# 1) with Free
+    cor.test(metadata_pam$vitd25_ngml, metadata_pam$freeD, method="spearman")
+    ggplot(metadata_pam, aes(x=vitd25_ngml, y=freeD)) +
+        geom_point() +
+        geom_smooth(method='loess')+
+        coord_cartesian(xlim=c(0,50), ylim=c(0,40)) +
+        labs(title ="B)", legend="tab",
+            x="Serum total 25OHD level (ng/ml)", y="Serum free 25OHD level (pg/ml)") 
+```
+  
+  A) There was a significant correlation between serum total 25OHD and bioavailable 25OHD levels (Spearman r=0.73; P<0.001).  
+  
+```{r Correlation with total with free}
+# 2) with bioavailable
+    cor.test(metadata_pam$vitd25_ngml, metadata_pam$bioD, method="spearman")
+    ggplot(metadata_pam, aes(x=vitd25_ngml, y=bioD)) +
+        geom_point() +
+        geom_smooth(method='loess')+
+        coord_cartesian(xlim=c(0,50), ylim=c(0,20)) +
+        labs(title ="A)", 
+            x="Serum total 25OHD level (ng/ml)", y="Serum bioavailable 25OHD level (ng/ml)")
+```            
+
+  B) There was a significant correlation between serum total 25OHD and free 25OHD levels (Spearman r=0.66; P<0.001).
+The fitted lines represent locally weighted scatterplot smoothed (loess) curve, with 95% confidence intervals.
+
+                
+7. NOT USED: Output for Metaboanalyst software
+```{r Output for Metaboanalyst, eval=FALSE}
+# Create the dataset for Metaboanalyst (e.g., OPLS-DA)
+    metabolon_n140_output <- metabolon_n140_tbl  # Original metabolomics dataset has no study_id as a variable
+    metabolon_n140_output$study_id <- as.integer(rownames(metabolon_n140_output))
+    data_metaboanalyst_n140 <- metadata_pam %>%
+                            select(study_id, freeD2, vitd25_ngml_cat2, first_batch, second_batch) %>%
+                            inner_join(., metabolon_n140_output, by="study_id")
+# Output dataset (already processed)                   
+    write_csv(data_metaboanalyst_n140, "./data_metaboanalyst_processed_n140.csv")
+```
+
+8. Table 1 (Not needed for BST260)
+```{r Table 1, eval=FALSE}
+    table1_tb <- metadata_pam %>% select (-c(study_id, SampleID))  # For Table 1, remove character variables
+    vars <- names(table1_tb)[-1]
+    table1<-CreateTableOne(vars = vars, strata = c("vitd25_ngml_cat2"), 
+                           data=table1_tb,
+                           factorVars = c("female", "raceethn", 
+                                         "parent_asthma", "mata_smoke",
+                                         "birth_season", 
+                                         "premature37","intake_child_weight_born", "mata_delivery",
+                                         "prev_breathingprob2", "intake_eczema_history",
+                                         "intake_smoke", "intake_daycare", "breastmilk_mostly_3mo",
+                                         "corticosteroids_life", "corticosteroids_pre",
+                                         "IgE_cat2", "IgE_any_food", "aeroallergens_atopy","eos_4perc",
+                                         "RSVonly_NPA", "RVonly_NPA", "RSVRV_NPA", "OTHERvirus",
+                                         "RSV_NPA", "RV_NPA",
+                                         "PAM4_m35", "LCA3ABC",
+                                         "o2sat_initial", 
+                                         "CPAPintubate", "inpatient_location___3","IntensiveTreatment", "LOS3dys",
+                                         "recurrent_wheeze_sleep_36mo_cat", "ICSuse_36mo_cat",
+                                         "vitd25_ngml_cat2", "bioD2", "freeD2", "freeD4",
+                                         "pam4_metabolomics"
+                                         ))
+          print(table1, nonnormal = c("Age_mo", "intch_weight","LOS_dys",
+                                       "intch_respiratory_rate",
+                                      "RANTES_pgml","LL37_ngml", "vitd25_ngml", "bioD", "freeD", "dbp_ugml", 
+                                      "RWsleep_time2event_36mo", "ICS_time2event_36mo"),
+                            #exact = c("site"), 
+                            smd = FALSE,
+                            quote=TRUE, noSpaces = TRUE)         
+
+```                     
+
+
+9. Prepation for the analysis using MixOmics 
+```{r Prep for MixOmics}
+#1 X = Metabolomics data (X should be matrix)
+  dataMatrix_n140_merged <- as.matrix(metabolon_n140_tbl)
+#2 Y = Metadata (limited)
+      rownames(metadata_pam) <- metadata_pam$study_id
+  metadata_4vitd <- metadata_pam %>% select (vitd25_ngml, bioD, freeD, dbp_ugml)       
+  metadata_3vitd <- metadata_pam %>% select (vitd25_ngml, bioD, freeD) #, dbp_ugml) 
+  metadata_freeD <- metadata_pam %>% select (freeD) 
+  metadata_total <- metadata_pam %>% select (vitd25_ngml) 
+#3 Sanity check    
+  rownames(dataMatrix_n140_merged) %in% rownames(metadata_pam)   
+ 
+```
+
+Not needed for BST260.
+```{r 1st + 2nd batch, eval=FALSE}
+## Create the train set (2nd batch, n=80) 
+            index_2ndB <- ID_data_n140$second_batch==1  # Index for 2nd batch
+        dataMatrix_n80_train  <- dataMatrix_n140_merged[index_2ndB==TRUE,]
+            
+        sampleMetadata_n80_train <- metadata_pam[index_2ndB==TRUE,] %>% 
+                        select(-c(study_id, chronic_cohort, n1005)) %>% 
+                        as.data.frame
+            rownames(sampleMetadata_n80_train) <- metadata_pam[index_2ndB==TRUE,]$study_id
+            rownames(dataMatrix_n80_train) %in% rownames(sampleMetadata_n80_train)
+## Create the test set (1st batch, n=60)   
+            index_1stB <- ID_data_n140$first_batch ==1 & ID_data_n140$overlap==0  # Index for 1st batch w/o overlap
+        dataMatrix_n60_test   <- dataMatrix_n140_merged[index_1stB==TRUE,]
+                    
+        sampleMetadata_n60_test <- metadata_pam[index_1stB==TRUE,] %>% 
+                        select(-c(study_id, chronic_cohort, n1005)) %>% 
+                        as.data.frame
+            rownames(sampleMetadata_n60_test) <- metadata_pam[index_1stB==TRUE,]$study_id
+            rownames(dataMatrix_n60_test) %in% rownames(sampleMetadata_n60_test)
+```
+
+
+10. Loading mixOmics  (http://mixomics.org/).
+Caution -- this package disables the deplyr "select" function.
+```{r Upload mixOmics, message=FALSE}
+library(mixOmics)  
+```
+
+
+11. PCA    
+```{r PCA}
+    X=dataMatrix_n140_merged
+# Scree plot
+    tune.pca(X, 
+             ncomp  = 10, # Plot the proportion of explained variance for min(n, p)principal components
+             center = TRUE,     # Centering is a recommended transformation in most situations 
+             scale  = TRUE)     # Scaling aims to give similar weights to all genes in the analysis, since metabolites with high variance will be considered influential in PC
+    pca_mixOmics <- pca(X, 
+                        ncomp = 10, # First 2 components
+                        center = TRUE,            
+                        scale  = TRUE) 
+# Individual plot
+    ?plotIndiv
+    plotIndiv(pca_mixOmics, 
+              comp = c(1, 2), 
+              ind.names = FALSE, 
+              group   = metadata_pam$vitd25_ngml_cat2, # Grouping by serum total 25OHD level
+              ellipse = TRUE,  
+              legend  = TRUE, legend.title = "Serum total 25OHD level",
+              title   = 'Serum metabolomics proflies, PCA components 1 and 2')
+```
+  
+  The PCA score plot shows an overlap of the overall metabolome profile between the high and low 25OHD groups.
+Here we observe that the major source of variation (in the overll metabolomic profiles) may not be explained by serum total 25OHD levels. 
+
+
+
+11.1. Correlation circle (variable) plot highlights clusters and show their contribution to each principal component.
+```{r PCA Correlation circle plot}
+      plotVar(pca_mixOmics, 
+              comp = c(1, 2), 
+              var.names = FALSE, 
+              title = 'Correlation circle plot, PCA comp 1 - 2')  
+```      
+
+      
+
+12. Partial Least Squares Discriminant Analysis (PLS-DA)  
+For a discriminant analysis, we set the factor Y that indicates the total 25OH level (dichotomized by the median level) of each subject
+```{r PLS-DA}
+    X = dataMatrix_n140_merged    
+    Y = metadata_pam$vitd25_ngml_cat2
+# To evaluate the performance and the number of components necessary for the final model
+        plsda_vitd25 <- plsda(X, 
+                              Y, 
+                              mode = "canonical",
+                              ncomp = 2,  
+                              scale=TRUE)  
+```
+
+12.1. Sample plot - The individuals are projected into the subspace spanned by the first 2 PLS-DA components. 
+```{r PLS-DA sample plot}
+        plotIndiv(plsda_vitd25, 
+                  comp = 1:2,
+                  rep.space= 'XY-variate', # the mean subspace in which coordinates are averaged from the first two subspaces (XY).
+                  group = Y, 
+                  col.per.group = c("orange", "royalblue1"),
+                  style = 'ggplot2', alpha = 0.1, ind.names = FALSE,
+                  star = TRUE,
+                  ellipse = TRUE, ellipse.level =0.95, 
+                  legend = TRUE, legend.title = "Serum total 25OHD status", 
+                  size.legend.title=10, size.legend=10,
+                  size.xlabel =8, size.ylabel = 8,
+                  title = "PLS-DA sample plot", size.title=10)
+```
+  
+  There is a larger separation (and an overlap) of the two 25OHD groups compared to the unsupervised PCA sample plot. Confidence ellipses for each group are plotted to highlight the strength of the discrimination.  
+
+
+12.2. The prediction area is visualised by calculating a background surface first before overlaying the sample plot.
+```{r PLS-DA projection}
+  background = background.predict(plsda_vitd25, 
+                                  comp.predicted=2, 
+                                  dist = "max.dist") 
+                    #optional: xlim = c(-40,40), ylim = c(-30,30))
+  plotIndiv(plsda_vitd25, 
+            comp = 1:2,
+            group = Y, 
+            ind.names = FALSE, title = "Maximum distance",
+            legend = TRUE, legend.title = "Serum total 25OHD level",
+            background = background)   
+```
+    
+12.3. Classification performance of the PLS-DA model is assessed with the perf function with 10-fold cross-validation repeated 100 times. 
+```{r PLS-DA classification performance}
+        set.seed(1) # for reproducibility, only when the `cpus' argument is not used
+  perf_plsda_vitd25<- perf(plsda_vitd25, 
+                          validation = "Mfold", folds = 10, # 10-fold cross-validation
+                          nrepeat = 100, # for an accurate estimation, 50-100 repeats
+                          progressBar = FALSE, 
+                          auc = TRUE)   # AUC calculation for later
+  perf_plsda_vitd25$error.rate  
+```
+
+12.4. Performance plot: the optimal number of components based on t-tests that test for a significant difference in the mean error rate between components
+```{r PLS-DA performance plot}
+  plot(perf_plsda_vitd25, 
+      col = color.mixo(5:7), 
+      sd = TRUE, # *ncomp = 2 has lowest error rate (centroids.dist)
+      legend.position = "horizontal")  
+   ## Outputs 
+        perf_plsda_vitd25$choice.ncomp 
+```
+  
+  From the performance plot, the overall error rate and the Balanced Error Rate (BER) are similar and lower with the number of components of 2.  
+
+12.5. AUC plot: AUC is calculated from training cross-validation sets and averaged.
+```{r AUC plot}
+  auc.plsda = auroc(plsda_vitd25, 
+                    roc.comp = 1:2)  # Number of components in the model
+```
+
+
+13. Sparse PLS-DA
+PLS-DA is built on all metabolites, many of which may be uninformative to characterize the different groups. 
+By contrast, sPLS-DA analysis aims to identify a small subset of metabolites that best discriminate the classes.  
+
+13.1. First to estimate the classification performance (error rates) with respect to the number of selected variables in the model with the use of tune function
+```{r sPLS-DA Training, warning=FALSE}
+# Grid of possible keepX values that will be tested for each component
+  list.keepX <- seq(5, 50, by=5)
+# Number of variables in keepX to select  
+        library("snow") # For parallel computing
+        set.seed(0)
+  tune_plsda_vitd25<-tune.splsda(X, Y, 
+                            ncomp = 2, # Chosen from the PLS-DA above 
+                            test.keepX = list.keepX,
+                            validation = 'Mfold', folds = 10, nrepeat = 10, 
+                            dist = 'max.dist', 
+                            measure = "BER",
+                            scale=TRUE,
+                            progressBar = FALSE) 
+                            #, cpus = 8)  # Change the number of parallel CPUs to speed up
+  
+## error rate per component for the keepX grid     
+  error <- tune_plsda_vitd25$error.rate  
+## The number of optimal components to choose 
+  ncomp <- tune_plsda_vitd25$choice.ncomp$ncomp # optimal number of components based on t-tests
+     #ncomp
+## The optimal number of features to select on each component  
+  select.keepX <- tune_plsda_vitd25$choice.keepX[1:2]  
+      select.keepX
+  plot(tune_plsda_vitd25, col = color.jet(2))
+```
+  
+  
+  A number of 2 components is sufficient for our final sPLS-DA model to reach optimal performance. The number of metabolites in the sparse model would be 5-20.
+
+
+13.2. SPLS-DA final model.
+The final model includes 2 components with 5 and 15 selected variables on the components.
+```{r sPLS-DA FINAL model}
+splsda_vitd25 <- splsda(X, Y, 
+                        ncomp = 2,  # from the results above
+                        mode = "canonical",
+                        scale = TRUE,
+                        keepX = c(5,15))  
+```
+
+13.3. SPLS-DA Sample plot
+```{r sPLS-DA FINAL Sample plot}
+  plotIndiv(splsda_vitd25, 
+            comp = c(1,2),
+            rep.space= 'XY-variate', 
+            group = Y,
+            col.per.group = c("orange", "royalblue1"),
+            ind.names = FALSE, 
+            ellipse = TRUE,   ellipse.level =0.95,
+            star = TRUE,
+            legend = TRUE, legend.title = "Serum total 25OHD status", 
+            size.legend.title=10, size.legend=10,
+            style = 'ggplot2', alpha = 0.1, 
+            title = 'sPLS-DA, comp 1 & 2', size.title=10,
+            size.xlabel =8, size.ylabel = 8)
+```
+
+
+13.4. sPLS-DA AUC plot
+```{r sPLS-DA AUC plot}
+  auc.splsda = auroc(splsda_vitd25, roc.comp = 2)
+```
+
+13.5. Classification performance assessment of the final sPLS-DA model with 5 cross-validation repeated 100 times.
+```{r Final sPLS-DA model, warning=FALSE}
+     set.seed(1) # for reproducibility
+   perf.splsda <- perf(splsda_vitd25, 
+                       validation = "Mfold", folds = 5, nrepeat=100,
+                       dist = "all", 
+                       progressBar = FALSE)    
+    perf.splsda$error.rate
+    plot(perf.splsda) 
+```
+
+
+13.6. Examinining the stability of the variables selected across the different cross-validation folds. 
+(e.g., if 100%, the metabolite is selected in all cross-validation folds)
+```{r sPLS-DA stability}
+# Each variable's stability that is selected across the CV runs is represented with a vertical bar   
+      par(mfrow=c(1,2))
+  plot(perf.splsda$features$stable[[1]], type = 'h', ylab = 'Stability', 
+       xlab = 'Features', main = 'Component 1', las =2)
+  plot(perf.splsda$features$stable[[2]], type = 'h', ylab = 'Stability', 
+       xlab = 'Features', main = 'Component 2', las =2)
+      par(mfrow=c(1,1))     
+# Outputs the selected variables along with their loading weight value
+# Component 1      
+    ## Here we match the selected variables to the stable features
+       ind.match = match(selectVar(splsda_vitd25, comp = 1)$name, 
+                                  names(perf.splsda$features$stable[[1]]))
+    ## Extract the frequency of selection of those selected variables
+       Freq = as.numeric(perf.splsda$features$stable[[1]][ind.match])
+       data.frame(selectVar(splsda_vitd25, comp = 1)$value, Freq)    
+   
+# Component 2
+      ind.match = match(selectVar(splsda_vitd25, comp = 2)$name, 
+                                  names(perf.splsda$features$stable[[2]]))
+       Freq = as.numeric(perf.splsda$features$stable[[2]][ind.match])
+       data.frame(selectVar(splsda_vitd25, comp = 2)$value, Freq)  
+```
+
+
+13.7. sPLS-DA loading plots
+```{r sPLS-DA loading plot for comp 1, eval=FALSE}
+  plotLoadings(splsda_vitd25, 
+               comp = 1, 
+               title = 'Loadings on comp 1', 
+               contrib = 'max', 
+               method = 'mean')  
+```
+
+```{r sPLS-DA loading plot for comp 2, eval=FALSE}
+  plotLoadings(splsda_vitd25, 
+               comp = 2,
+               title = 'Loadings on comp 2', 
+               contrib = 'max', 
+               method = 'mean') 
+```
+
+13.8. sPLS-DA heatmap
+```{r sPLS-DA heatmap, fig.height=7, fig.width=7}
+# Prep for the grouping (color) by patient class        
+    heatmap_df <- data.frame(study_id = rownames(metadata_pam),   # You need study ID in the data
+                             vitd25_ngml_cat2 = metadata_pam$vitd25_ngml_cat2)
+    patient.col <- c("orange", "blue")[heatmap_df$vitd25_ngml_cat2]   
+## The final metabolomics signature is plotted (default values to Euclidian distance and Complete linkage).
+  cim(mat = splsda_vitd25, 
+      comp = 1:2,
+      mapping = "XY",
+      transpose = TRUE,
+      dist.method = c("euclidean", "euclidean"),
+      clust.method = c("centroid", "centroid"),
+      cluster = "both",
+         xlab="Patients",
+         ylab="Metabolites",
+      row.sideColors = patient.col, row.names = TRUE,
+         title ="Component 1",
+         legend=list(title="Serum total 25OHD status"),
+         margins =c(10,20))   # The color is the SCALED intensity of metabolite in each person
+          
+```
+  
+  The heatmap showed some clustering of the metabolites and decent (but incompelte) seperation of the two 25OHD groups.
+
+
+13.9. Get the loading vectors from PLS-DA model. These will be used for the regression later.
+```{r Loading vectors from PLS-DA}
+loading_PLSDA <-as.data.frame(splsda_vitd25$loadings[[1]]) 
+        loading_PLSDA$metabolite <- rownames(loading_PLSDA)  # Add a row for metabolites
+        index1 <- loading_PLSDA["comp 1"] !=0   # Index the selected metabolites from comp 1
+        index2 <- loading_PLSDA["comp 2"] !=0   # Index the selected metabolites from comp 2
+loading_PLSDA_comp1 <- loading_PLSDA$metabolite[index1==TRUE] # Get the selected metabolite names
+        print (loading_PLSDA_comp1)
+loading_PLSDA_comp2 <- loading_PLSDA$metabolite[index2==TRUE]
+        print (loading_PLSDA_comp2)
+intersect(loading_PLSDA_comp1, loading_PLSDA_comp2)
+```
+
+
+14. Partial Least Squares (PLS) regrssion modeling the three serum vitamin D levels (total, bioavailable, and free 25OHDs).  Instead of the dichotomised 25OHD levels used in the PLS-DA analysis above (which loses the informaiton of continous variable), here we use the continous values of serum 25OHD levels in an attempt to explain the 25OHD levels with respect to the metabolite levels.   
+
+First, we used PLS and then followed with the sparse variation sPLS for comparison. 
+```{r PLS}
+    X = dataMatrix_n140_merged
+    Y = metadata_total   #total 25OHD only
+    Y3= metadata_3vitd   # 3 compounds
+    Y4= metadata_4vitd   # 4 compounds
+# The first step is to tune the key parameters by using perf().
+    npa_pls <- pls(X, 
+                   Y3, 
+                   ncomp = ncol(Y3), 
+                   mode = "regression",
+                   scale  = TRUE)
+    #Tune function cannot be used for the canonical mode
+          set.seed(100)
+    tune.pls <- perf(npa_pls,       
+                     validation = "Mfold", folds = 10,     # 10-fold cross validation x 100 times
+                     nrepeat = 100,
+                     progressBar = FALSE) 
+
+    plot(tune.pls$Q2.total)  # Q2.total to tune the number of components 
+        #abline(h=0.0975)     # The rule of thumbs is that a PLS component should be included in the model if its value >= 0.0975.
+        tune.pls$Q2.total
+```
+
+
+
+13. Sparse PLS (sPLS). 
+sPLS combines both integration and variable selection to maximize the covariance between two data sets and to identify latent variables. 
+```{r sparse PLS}
+    ncomp=ncol(Y3) # When canonical mode is used, the num of components is <= ncol(Y) (number of variables in Y)
+    #ncomp=10
+    npa_spls <- spls(X, 
+                     Y3, 
+                ncomp = ncomp,                  
+                keepX = c(5,15,25),  
+                keepY = rep(ncol(Y3),  length=ncomp),   
+                scale = TRUE,
+                mode = "canonical")  # Options: "regression", "canonical", "invariant", "classic"
+```
+
+```{r sPLS perf -- Not used for cannonical mode, eval=FALSE}
+      set.seed(1)  
+    tune.spls <- perf(npa_spls, 
+                      validation = "Mfold", folds = 10, 
+                      progressBar = FALSE, 
+                      dist = 'max.dist',
+                      nrepeat = 100)
+    plot(tune.spls$Q2.total)
+        abline(h = 0.0975)
+    tune.spls$Q2.total  
+```
+
+
+13.1. sPLS sample plot represents the samples projected onto the sPLS components.
+```{r sPLS Sample plot}
+
+    plotIndiv(npa_spls, comp = c(1,2), 
+              rep.space= 'XY-variate', 
+              group = metadata_pam$vitd25_ngml_cat2,
+              col.per.group = c("orange", "royalblue1"),
+              style = 'ggplot2', alpha = 0.1, ind.names = FALSE,
+                  star = TRUE,
+                  ellipse = TRUE, ellipse.level = 0.95,
+                  legend = TRUE, legend.title = "Serum total 25OHD status", 
+                  size.legend.title=10, size.legend=10,
+                  size.xlabel =8, size.ylabel = 8,
+                  title = "Sample plot of sPLS", size.title=0)
+```   
+  
+  Each dot represents the global serum metabolomic profile of a single patient by plotting the component scores in the smaller subspace spanned by latent variables of  sPLS model. The scatter plot indicates the similarities and dissimilarities in the global metabolomic profile between patients, grouped by serum total 25OHD levels (defined by the median values). The eclipses are 95% confidence intervals. The arrows start from the centroid of each group and end for each patient belonging to each group.
+  
+
+13.2. sPLS loading plot:
+```{r sPLS Loading plot comp 1, fig.height=5, fig.width=10, eval=FALSE}
+  plotLoadings(npa_spls, 
+               comp = 1, 
+               title = 'Loadings on comp 1', 
+               contrib = 'max', 
+               method = 'mean') 
+```
+```{r sPLS Loading plot comp2, fig.height=5, fig.width=10, eval=FALSE}
+  plotLoadings(npa_spls, 
+               comp = 2, 
+               title = 'Loadings on comp 2', 
+               contrib = 'max', 
+               method = 'mean')  
+
+```
+```{r Integrated loading plot}
+# First unload mixOmics and upload dplyr to use the "select" function
+      detach("package:mixOmics", unload=TRUE)
+      detach("package:dplyr",    unload=TRUE)
+      library(dplyr); library(broom)
+# Get loading values
+    loading_spls <-as.data.frame(npa_spls$loadings[[1]]) 
+    loading_spls$metabolite <- rownames(loading_spls)  # Add a row for metabolites
+
+    loadings_1 <- loading_spls %>% 
+                    filter(.["comp 1"] != 0) %>%
+                    select(c(1,4)) %>%               
+                    rename("loading" = "comp 1")
+    loadings_2 <- loading_spls %>% 
+                    filter(.["comp 2"] != 0) %>%
+                    select(c(2,4)) %>%               
+                    rename("loading" = "comp 2")
+    loadings_tbl <- rbind(loadings_1, loadings_2) %>% arrange(abs(loading)) %>% tbl_df()
+    loadings_tbl[["sign"]] = ifelse(loadings_tbl[["loading"]] >= 0, "positive", "negative")
+# ggplot
+    loadings_tbl %>%
+        ggplot(aes(x=reorder(metabolite, abs(loading)), y=loading, fill=sign)) +
+        geom_bar(stat= "identity") +
+        scale_fill_manual(values = c("positive" = "orange", "negative" = "royalblue1")) +
+        coord_flip() +
+        xlab("Metabolite") + ylab("Loading")
+```
+  
+  The plot represents the loading coefficient of 20 serum metabolites that were selected from the sPLS regression model. The 20 metabolites were ranked according to their contribution to lower serum 25OHD (total, bioavailable, and free) (top to bottom).
+
+
+13.3. Heatmap 
+```{r sPLS heatmap 1, fig.height=7, fig.width=8}
+# Heatmap 1
+  library(mixOmics)
+  cim(mat=npa_spls, 
+      comp = 1:2, 
+      #transpose= TRUE,
+      dist.method = c("euclidean","euclidean"),
+      clust.method = c("average", "average"),
+      cluster = "row",
+      col.cex = NULL,
+      row.cex = NULL,
+      #threshold = 0.3,
+          xlab = "Serum vitamin D compounds", 
+          ylab = "Serum metabolome (selected metabolites)", 
+          margins = c(7, 18)) 
+```
+  
+  The heatmap shows the correlations between the serum 25OHD (total, bioavailable, and free) and 20 selected metabolites that were examined using hierarchical clustering with average linkage algorithm.
+
+```{r sPLS heatmap 2,  fig.height=5, fig.width=9, eval=FALSE}
+# Heatmap 2
+  # Prep for the grouping (color) by patient class        
+    heatmap_df <- data.frame(study_id = rownames(metadata_pam),   # You need study ID in the data
+                             vitd25_ngml_cat2 = metadata_pam$vitd25_ngml_cat2)
+    patient.col <- c("orange", "blue")[heatmap_df$vitd25_ngml_cat2]   
+  # heatmap
+   cim(mat=npa_spls, 
+      comp = 1:2, 
+      mapping = "X",
+      transpose= TRUE,
+      dist.method = c("euclidean","euclidean"),
+      clust.method = c("complete", "complete"),
+      cluster = "both",
+         ylab="Selected metabolites",
+         xlab="Patients",
+      row.sideColors = patient.col, row.names = TRUE,
+         title ="Component 1",
+         #legend=list(title="Serum total 25OHD status"),
+         margins =c(10,20))   # The color is the SCALED intensity of metabolite in each person
+
+```      
+
+13.4. network
+```{r sPLS network, fig.height=5, fig.width=5, eval=FALSE}
+      color.edge <- color.GreenRed(50)
+  network(npa_spls, comp=1:2,
+          shape.node = c("rectangle", "rectangle"),
+          color.node = c("white", "pink"),
+          color.edge = color.edge)
+```
+13.5. Get the loading data from sPLS model
+```{r Get laoding vectors from sPLS}
+loading_spls <-as.data.frame(npa_spls$loadings[[1]]) 
+        loading_spls$metabolite <- rownames(loading_spls)  # Add a row for metabolites
+        index1 <- loading_spls["comp 1"] !=0   # Index the selected metabolites from comp 1
+        index2 <- loading_spls["comp 2"] !=0   # Index the selected metabolites from comp 2
+loading_sPLS_comp1 <- loading_spls$metabolite[index1==TRUE] # Get the selected metabolite names
+        print (loading_sPLS_comp1)
+loading_sPLS_comp2 <- loading_spls$metabolite[index2==TRUE]
+        print (loading_sPLS_comp2)
+intersect(loading_sPLS_comp1, loading_sPLS_comp2)
+```
+
+
+16. Regression models: Here we examine the association between the each of the 20 selected 25OHD-related metabolites and the risk of positive pressure ventilation (PPV) use, the clincial outcome.  
+
+16.1. First to make a dataset containing both metabolomics and metadata
+```{r Regression prep}
+# First unload mixOmics and upload dplyr to use the "select" function
+      detach("package:mixOmics", unload=TRUE)
+      detach("package:dplyr",    unload=TRUE)
+      library(dplyr); library(broom)
+# Second, use the log-transformed (no scaling) data metabolon_n140_tbl
+  metabolon_n140_tbl_log2 <- log(metabolon_n140_tbl, base=2) 
+  metabolon_n140_tbl_log2$study_id <- rownames(metabolon_n140_tbl) %>% as.integer()
+# Third, integrate the datasets (non-log metabolomics + metadata)
+  ## sPLS
+    loading_sPLS_comp12 <- c(loading_sPLS_comp1, loading_sPLS_comp2)
+  data_regress_n140_sPLS <- metabolon_n140_tbl_log2 %>% 
+            select(loading_sPLS_comp12,  
+                   study_id) %>%   # Don't change the order
+            inner_join(., metadata_pam, by="study_id")  
+  #sPLS-DA
+    loading_PLSDA_comp12 <- c(loading_PLSDA_comp1, loading_PLSDA_comp2)
+  data_regress_n140_sPLSDA <- metabolon_n140_tbl_log2 %>% 
+            select(loading_PLSDA_comp12,  
+                   study_id) %>%   # Don't change the order
+            inner_join(., metadata_pam, by="study_id")  # 1-20 columns should be metabolites for the regression loop
+  # Decide 1) loading and 2) dataset for below
+  loading <- loading_sPLS_comp12
+  data_regress <-data_regress_n140_sPLS
+  
+```
+
+16.1. Linear correlation between total 25OHD level and each of the 20 metabolites selected from sPLS model
+```{r Linear regression}
+        coef_lm    <- numeric(length(loading))
+        se_lm      <- numeric(length(loading))
+        p.value_lm <- numeric(length(loading))
+  for (i in seq_along(loading)){
+       fit <- lm(vitd25_ngml ~ data_regress[[i]], data=data_regress)  #1-20 are metabolites
+       coef_lm[i]    <- summary(fit)$coefficients[2,1]  # Summary of 2nd row + 1st column = coef 
+       se_lm[i]      <- summary(fit)$coefficients[2,2]  # Summary of 2nd row + 1st column = se 
+       p.value_lm[i] <- summary(fit)$coefficients[2,4]  # Summary of 2nd row + 1st column = p-value 
+        }
+      
+      output_lm <- cbind(loading, coef_lm, se_lm, p.value_lm) %>% tbl_df()
+      output_lm$coef_lm    <- as.numeric(output_lm$coef_lm) %>% round (., digits =2)
+      output_lm$se_lm      <- as.numeric(output_lm$se_lm) %>% round (., digits =2)
+      output_lm$p.value_lm <- as.numeric(output_lm$p.value_lm)
+      output_lm$fdr_p <- as.numeric(output_lm$p.value_lm) %>% p.adjust(., "fdr") %>% round(., digits=4)
+      output_lm$p.value_lm <- output_lm$p.value_lm %>% round(., digits=4)
+
+  output_lm; 
+  output_lm %>% filter(., p.value_lm <0.05) # Of 20 metabolites, 10 are significantly correlated with the total 25OHD level (FDR <0.05).
+```
+
+16.2. Multivariable logistric regression adjusted for potential confounders (age, sex, history of premature birth, feeding status, weight at presentation, corticosteroid use, and detected virus)
+```{r}
+        est_logit <- numeric(length(loading))
+        se_logit  <- numeric(length(loading))
+        p.value_logit <- numeric(length(loading))
+for (i in seq_along(loading)){
+    fit <- glm(CPAPintubate ~ data_regress[[i]] 
+                 + Agecat2 
+                 + female  #+ raceethn 
+                 + premature37
+                 + breastmilk_mostly_3mo9 
+                 + intch_weight_cat2 
+                 + corticosteroids_pre
+                 + RSVonly_NPA #+ RVonly_NPA #+ vitd25_ngml
+                 , family=binomial, data=data_regress)  
+              est_logit[i] <- summary(fit)$coefficients[2,1]  # Needs to be exponentiated!
+              se_logit[i]  <- summary(fit)$coefficients[2,2]  # Needs to be exponentiated!
+              p.value_logit[i] <- summary(fit)$coefficients[2,4]
+              }
+    output_logit <- cbind(loading, 
+                          OR=exp(est_logit), LL=exp(est_logit-1.96*se_logit), UL=exp(est_logit+1.96*se_logit), 
+                          p.value_logit) %>%
+                          tbl_df()
+          output_logit$OR    <- as.numeric(output_logit$OR ) %>% round (., digits =2)
+          output_logit$LL    <- as.numeric(output_logit$LL ) %>% round (., digits =2)
+          output_logit$UL    <- as.numeric(output_logit$UL ) %>% round (., digits =2)      
+          output_logit$fdr_p <- as.numeric(output_logit$p.value_logit) %>% p.adjust(., "fdr") %>% round(., digits=3)
+          output_logit$p.value_logit <-as.numeric(output_logit$p.value_logit) %>% round(., digits=3)
+    output_logit
+    output_logit %>% filter(., fdr_p <=0.05) 
+```
+
+
+
+16.3. Rondom-effects models adjusting for the covariates above and accounting for potential patient clustering within the hospitals.
+```{r Random-effects}
+      library("lme4"); 
+              est_logit_ad <- numeric(length(loading))
+              se_logit_ad  <- numeric(length(loading))
+              p.value_logit_ad <- numeric(length(loading))
+  for (i in seq_along(loading)){
+        fit2 <- glmer(CPAPintubate ~ data_regress[[i]] 
+                 + Agecat2 
+                 + female #+ raceethn 
+                 + premature37
+                 + breastmilk_mostly_3mo9 
+                 + intch_weight_cat2 
+                 + corticosteroids_pre
+                 + RSVonly_NPA #+ RVonly_NPA  #+ vitd25_ngml
+                     + (1 | site),
+                      family=binomial, data=data_regress,
+                      control = glmerControl(optimizer = "bobyqa"))  
+              est_logit_ad[i] <- summary(fit2)$coefficients[2,1]  # Needs to be exponentiated!
+              se_logit_ad[i]  <- summary(fit2)$coefficients[2,2]  # Needs to be exponentiated!
+              p.value_logit_ad[i] <- summary(fit2)$coefficients[2,4]
+            }
+      adj_output_logit <- cbind(loading, 
+                                OR=exp(est_logit_ad), LL=exp(est_logit_ad-1.96*se_logit_ad), 
+                                UL=exp(est_logit_ad+1.96*se_logit_ad), 
+                                p.value_logit_ad) %>%
+                                tbl_df()
+          adj_output_logit$OR    <- as.numeric(adj_output_logit$OR) %>% round (., digits =2)
+          adj_output_logit$LL    <- as.numeric(adj_output_logit$LL) %>% round (., digits =2)
+          adj_output_logit$UL    <- as.numeric(adj_output_logit$UL) %>% round (., digits =2)      
+          adj_output_logit$fdr_p <- as.numeric(adj_output_logit$p.value_logit_ad) %>% p.adjust(., "fdr") %>% round(., digits=4)
+          adj_output_logit$p.value_logit_ad <-as.numeric(adj_output_logit$p.value_logit_ad) %>% round(., digits=4)
+   adj_output_logit
+   adj_output_logit %>% filter(., fdr_p <0.05) 
+```
+
+  Among these 20 metabolites, in the multivariable logistic regression models adjusting for potential confounders and the random-effects models accounting for site-effects, 9 metabolites were significantly associated with the risk of PPV use (all FDR<0.05). Specifically, among the metabolites that were correlated with lower 25OHD levels, 3 metabolites – fibrinopeptide A, methyladenosine, and sphingomyelin (d18:1/18:1, d18:2/18:0) – were associated with a significantly higher risk of PPV use (all FDR<0.05). By contrast, among the metabolites that were correlated with higher 25OHD levels, 6 metabolites – 1-(1-enyl-stearoyl)-2-oleoyl-glycerophosphorylethanolamine (GPE), 1-(1-enyl-stearoyl)-2-linoleoyl-GPE, isoursodeoxycholate, 1-linoleoyl-glycerophosphate (GPA), glycerate, and glycylvaline – were associated with a significantly lower risk of PPV use (all FDR<0.05).
+  
+
+16.4. ROC: AUC of the 20 metabolites vs. PPV risk is 0.90, indiating a good discrimination ability of the 20-metabolite model.
+```{r fig.height=5, fig.width=5}
+    #names(data_regress)            
+  data_auc <- data_regress[, c(1:20, 81)] # Create another dataset that includes 20 metabolites and PPV
+    #names(data_auc)
+# Compute AUC for predicting Class with the variable CreditHistory.Critical
+  mylogit <- glm(CPAPintubate ~ ., 
+                 data = data_auc, family = "binomial")
+    #summary(mylogit)
+  prob=predict(mylogit,type=c("response"))
+  data_auc$prob=prob
+
+library(pROC);   
+    g <- roc(CPAPintubate ~ prob, data = data_auc)
+    auc(g)
+    ggroc(g)      
+```
+  
+  The ROC curve estimates the discrimination ability of the selected 20 metabolites on the risk of PPV use. The area-under-the estimated receiver operating characteristic curve (AUC) was 0.92, indicating that a high discrimination ability of the 20-metabolite model.
+
+## Conclusion
+  Based on the data from a prospective multicenter cohort of infants hospitalized for bronchiolitis, the serum 25OHD levels were associated with differences in the serum metabolome profile. Specifically, from all metabolites detected, we identified a set of 20 metabolites – a metabolomic signature, which was associated with circulating 25OHD (total, bioavailable, and free) levels. Among these, metabolites correlated with lower 25OHD (e.g., sphingolipids) were associated with a significantly higher risk of PPV use. In contrast, metabolites correlated with higher 25OHD (e.g., plasmalogen pathway metabolites [GPE and GPA]) were associated with a significantly lower risk of PPV use. Although causal inference remains premature, prior research and our observations collectively suggest that circulating 25OHD, through affecting metabolites associated with inflammatory processes, influences bronchiolitis severity. Our data should advance research into the complex interrelations between the environmental factors (e.g., vitamin D), host immunity, and the pathobiology of bronchiolitis in infants.    
+
+
+
+Optional -- Random forest. The selected metabolites are somewhat different from those in the sPLS models above.
+```{r random forrest}
+library(randomForest); library(caret)
+# Make training dataset
+  metabolon_n140_tbl_rf <- metabolon_n140_tbl
+  metabolon_n140_tbl_rf$study_id <- rownames(metabolon_n140_tbl) %>% as.integer()
+  metabolon_n140_tbl_rf <- metadata_pam %>% 
+                            select(study_id, vitd25_ngml_cat2) %>%
+                            inner_join(., metabolon_n140_tbl_rf, by="study_id") %>%
+                            select(-study_id)
+  rownames(metabolon_n140_tbl_rf) <- rownames(metabolon_n140_tbl)
+
+
+# Parallel computing
+    library("doMC")        
+    registerDoMC(cores = 8) ## All subsequent models are then run in parallel
+# Fit random forrest  
+  set.seed(1)
+  rf_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all 479 metabolites
+                  data=metabolon_n140_tbl_rf,
+                  method="rf", 
+                  #preProcess = c('center', 'scale'),
+                  tuneLength = 4,  # Try 4 different values for each parameter
+                  trControl = trainControl(method = "cv", number = 10), # Cross validation
+                  prox=TRUE) 
+  rf_fit
+# Check the variable importance 
+  varImp(rf_fit, scale=FALSE)
+```
+
+
+
+20. Other ml methods (not run)
+```{r eval=FALSE}
+# Prep for caret machine learning --------------------------------------------------
+    library(caret)
+  ## Make training dataset
+            dataMatrix_n80_train_tbl <- tbl_df(dataMatrix_n80_train)
+            dataMatrix_n80_train_tbl$study_id <- rownames(dataMatrix_n80_train) %>% as.integer()
+        training_rf_n80 <- metadata_pam[index_2ndB==TRUE,] %>% 
+                            select(study_id, vitd25_ngml_cat2) %>%
+                            inner_join(., dataMatrix_n80_train_tbl, by="study_id") %>%
+                            select(-study_id)
+            rownames(training_rf_n80) <- dataMatrix_n80_train_tbl$study_id
+   ## Make testing dataset         
+            dataMatrix_n60_train_tbl <- tbl_df(dataMatrix_n60_test)
+            dataMatrix_n60_train_tbl$study_id <- rownames(dataMatrix_n60_test) %>% as.integer()
+        testing_rf_n60 <- metadata_pam[index_1stB==TRUE,] %>% 
+                            select(study_id, vitd25_ngml_cat2) %>%
+                            inner_join(., dataMatrix_n60_train_tbl, by="study_id") %>%
+                            select(-study_id)
+            rownames(testing_rf_n60) <- dataMatrix_n60_train_tbl$study_id
+   ## Parallel computing
+    library("doMC")        
+    registerDoMC(cores = 8) ## All subsequent models are then run in parallel
+     #library(doParallel)
+     #cl <- makePSOCKcluster(8)
+     #registerDoParallel(cl)
+   
+# Neural network --------------------------------------------------           
+    ## Training
+        set.seed(0)
+        nnet_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all 479 metabolites
+                        data=training_rf_n80,
+                        method="nnet", 
+                        #preProcess = c('center', 'scale'),
+                        tuneLength = 4,  # Try 4 different values for each parameter
+                        trControl = trainControl(method = "cv", number = 10), # Cross validation
+                        linout=FALSE, #Classifcation
+                        prox=TRUE)     
+             nnet_fit
+    ## Testing
+        pred_nnet <- predict(nnet_fit, testing_rf_n60)
+        confusionMatrix(data=pred_nnet, testing_rf_n60$vitd25_ngml_cat2)  
+
+           
+# Xgboost --------------------------------------------------          
+    ## Training
+            set.seed(0)
+       Xgboost_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all 479 metabolites
+                        data=training_rf_n80,
+                        method="xgbTree", 
+                        #preProcess = c('center', 'scale'),
+                        tuneLength = 4,  # Try 4 different values for each parameter
+                        trControl = trainControl(method = "cv", number = 10), # Cross validation
+                        linout = FALSE,  # For classifcation analysis
+                        prox=TRUE)     
+             Xgboost_fit           
+    ## Testing
+        pred_Xgboost <- predict(Xgboost_fit, testing_rf_n60)
+        confusionMatrix(data=pred_Xgboost, testing_rf_n60$vitd25_ngml_cat2)  
+           
+           
+           
+```
+
