@@ -11,7 +11,7 @@ version
 ```
 
 ## Analysis
-1. Uploading the packages
+## 1. Uploading the packages
 ```{r Upload packages, message=FALSE}
 library("tidyverse")
 library("cluster")
@@ -22,118 +22,83 @@ library("lme4")
 
 ```
 
-2. Uploading the metabolome dataset.  As the dataset is based on two batches, the data have been sclaed and imputed by Metabolon.
+## 2. Uploading the microbiome dataset.  
 ```{r Upload the metabolomics dataset}
-metabolon_n140_merged_tbl <- read_csv("../Data/merged/merged_data_serum_metab_averaged_n140.csv")
-  dim(metabolon_n140_merged_tbl)   # Row = subject ; Col = metabolite
-```
-```{r Change to a matrix}
-metabolon_n140_merged_mat <- as.matrix(metabolon_n140_merged_tbl [,-1]) # Remove study ID
-  rownames(metabolon_n140_merged_mat) <- metabolon_n140_merged_tbl$study_id # Study ID as the rowname  
-  dim(metabolon_n140_merged_mat)   
+genus_tbl <- read_csv("./data/m35_n1005_Genus_Table.csv") 
+dim(genus_tbl)   # Row = 379 genera ; Col = 1005 subjects
+head(genus_tbl)
 ```
 
-Based on the study aim, 69 xenobiotics and 222 unknown compounds were removed.  
-```{r Remove xenobiotics and unknown compounds}
-# First, upload the file that has metabolites' names
-  compound_id <- read_csv("../Data/merged/compounds_only_merged_serum_metabolome.csv")     
-    table(compound_id$super_pathway, useNA="ifany")
-    compound_id %>% select (-biochemical) %>% filter(!is.na(sub_pathway)) %>% 
-                group_by(super_pathway) %>% 
-                summarize (unique_sub = n_distinct(sub_pathway))  # Number of subpathway
-    
-# Next, index these
-  index_xenobiotics_unknown <- compound_id$super_pathway=="Xenobiotics" | is.na(compound_id$super_pathway)
-  sum(index_xenobiotics_unknown)  # 291 xenobiotics + unknown compounds
-# Prep for indexing            
-  t_metabolon_n140_merged_mat <- t(metabolon_n140_merged_mat)  
-# Remove 291 xenobiotics + unknown compounds
-  metabolon_n140_merged_selected_mat <- t(t_metabolon_n140_merged_mat[index_xenobiotics_unknown==FALSE,])
-    dim(metabolon_n140_merged_selected_mat)  
+## 2.1. Create genus data by removing taxonomic ranks.
+```{r Create genus data}
+# Remove taxonomy -- the key is OTU
+genus_mat1 <- as.matrix(genus_tbl[,-c(1:7)])
+rownames(genus_mat1) <- genus_tbl$X1 # Genus(OTU code) as rowname
+
+# Change to matrix
+glimpse(genus_mat1) # Row = 379 genera, col = 1005 subjects
+genus_mat <- t(genus_mat1) # Transpose
+glimpse(genus_mat) # Row = 1005 subjects, col = 379 genera, rownames=SampleID_NPA
+
 ```
 
+## Clearning sample ID
+```{r Clearning sample ID}
+microbiota_df<-as.data.frame(genus_mat)
+head(microbiota_df)
+microbiota_df$SampleID_NPA <- rownames(genus_selected_mat) # Create variable SampleID_NPA
 
-Optional: Codes that remove the metabolites with lowest variability (the lowerst quartile).  This was not used.
-```{r Remove metabolites with low variability, eval=FALSE}
-  sd_metabolite <- metabolon_n140_merged_selected_mat %>% apply(., 2, sd) # Calculte SD for each metabolite
-    q_sd <- quantile(sd_metabolite) 
-    q_sd[2]
-  ind_lowest_iqr_sd <- sd_metabolite < q_sd[2] #indexing the lowest quartile
-  
-  metabolon_n140_merged_selected_mat <- metabolon_n140_merged_selected_mat[,ind_lowest_iqr_sd==FALSE]
-    dim(metabolon_n140_merged_selected_mat)      
-            
+# Remove extra text from SampleID_NPA:
+microbiota_df$SampleID_NPA <- gsub(pattern = "^Mansbach.", replacement = "", x = microbiota_df$SampleID_NPA)
+microbiota_df$SampleID_NPA <- gsub(pattern = ("B|C|A$") , replacement = "", microbiota_df$SampleID_NPA)
+
+# Data not sorted -> Sort data:
+microbiota_df<-microbiota_df %>% arrange(., by=SampleID_NPA)
+
+# Genera data are changed to the tbl format.
+microbiota_tbl <- microbiota_df %>% tbl_df()
+rownames(microbiota_tbl) <- microbiota_tbl$SampleID_NPA #Set rownames
+microbiota_tbl <- microbiota_tbl %>% select (-SampleID_NPA) #Remove SampleID_NPA
+dim(microbiota_tbl) # rows=1005 subjects, cols=379
 ```
 
-Optional: This code was not used because the current dataset is already impurted and scaled.
-```{r Manual imputaion, transormation, & scaling, eval=FALSE}
-  t_metabolon_n140_merged_mat <- t(metabolon_n140_merged_mat)    
-        dim(t_metabolon_n140_merged_mat)
-# Imputation                  
-  replacezero <- function(x) "[<-"(x, !x | is.na(x), min(x[x > 0],
-              na.rm = TRUE) / 1)   
-  t_metabolon_n140_merged_mat <- apply(t_metabolon_n140_merged_mat, 
-                                       1, replacezero) 
-  dim(t_metabolon_n140_merged_mat) 
-
-#Log2-transformation
-  metabolon_n140_merged_mat <- t(log(t_metabolon_n140_merged_mat, base=2))              
-            
-# Scaling (pareto vs. auto) -- mixOmics default -- scaling = TRUE
-   t_metabolon_n140_merged_mat <- t(metabolon_n140_merged_mat)
-        dim(t_metabolon_n140_merged_mat)  # Transpose for scaling
-   paretoscale <- function(z) {
-            rowmean <- apply(z, 1, mean)        # row means
-            rowsd <- apply(z, 1, sd)            # row standard deviation
-            rowsqrtsd <- sqrt(rowsd)            # sqrt of sd
-            rv <- sweep(z, 1, rowmean,"-")      # mean center
-            rv <- sweep(rv, 1, rowsqrtsd, "/")  # divide by sqrtsd
-            return(rv)
-            }    
-    autoscale <- function(z) {
-            rowmean <- apply(z, 1, mean)        # row means
-            rowsd <- apply(z, 1, sd)            # row standard deviation
-            rv <- sweep(z, 1, rowmean,"-")      # mean center
-            rv <- sweep(rv, 1, rowsd, "/")      # divide by sd
-            return(rv)
-            } 
-   metabolon_n140_merged_mat <- t(paretoscale(t_metabolon_n140_merged_mat))
-       dim(t_metabolon_n140_merged_mat)
-       
+## Optional: Codes that remove the genera with lowest variability (the lowerst quartile). 
+Given the relatively small number of genera, we do **NOT** need to do this.
+```{r Remove genera with low variability, eval=FALSE}
+# Remove the genera with lowest variability (the lowest quartile).
+sd_genus <- genus_mat %>% apply(., 2, sd) # Calculte SD for each genera
+head(sd_genus)
+ 
+q_sd <- quantile(sd_genus)
+q_sd
+q_sd[2]
+ind_lowest_iqr_sd <- sd_genus < q_sd[2] #indexing the lowest quartile
+genus_selected_mat <- genus_mat[,ind_lowest_iqr_sd==FALSE]
+dim(genus_selected_mat)    # rows=1005 subjects, cols=290 genera with SD >= lowest quartile
 ```
 
-The metabolome data are changed to the tbl format.
+2.1. Create genus data by removing taxonomic ranks.
 ```{r}
-  metabolon_n140_tbl <- tbl_df(metabolon_n140_merged_selected_mat)  
-    rownames(metabolon_n140_tbl) <- rownames(metabolon_n140_merged_selected_mat)        
-    dim(metabolon_n140_tbl)
- # names(metabolon_n140_tbl)   
+otu_tbl <- genus_tbl %>% select(c(2:7)) 
+rownames(otu_tbl) <- genus_tbl$X1 # Genus(OTU code) as rowname
+View(otu_tbl)
 ```
+
+
+
 
 3. Importing the metadata
 ```{r Import metadata, include=FALSE}
-    ID_data_n140  <- read_csv("../Data/merged/id_merged_n140.csv")
-        #class(ID_data_n140)
-        #glimpse(ID_data_n140)
-    metadata_n1016 <- read_csv("../Data/data_m35/m35_metadata_n1016_2017july24.csv")
-        #class(metadata_n1016)
-    pam_data_n1005 <- read_csv("../Data/data_m35/PAMclusters_m35_n1005.csv")    
-        #glimpse(pam_data_n1005)
-##  Restrict to n=140 + add PAM data + delete unnecessary variables
-    metadata <- metadata_n1016 %>%
-                 inner_join(ID_data_n140, by="study_id") %>%
-                 select (-c(acute_cohort, enrolled_subj, SourceID:DateCollected_month_NPA, 
-                               collection_season_INDX:collection_season_NPA, 
-                               inpatient_hfo:inpatient_hel,
-                               RSV_CLRN:RV_CT_CLRN, mo30_cat_0to1:mo30_farmanimal_0to1)) %>%
-                 left_join(pam_data_n1005, by="study_id") 
-     dim(metadata)
+library("readstata13")
+metadata1 <- read.dta13("./data/m35 _metadata_2018january_n1005.dta")
+dim(metadata1) # rows=1005 subjects, col = 174 variables
+
+# Making sure if the order of sample ID:s matches across the datasets
+metadata$SampleID_NPA == rownames(microbiota_tbl) # Contain same sampleIDs in same order
+unique(metadata$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 ```
 
-Making sure if the order of study id matches across the datasets       
-```{r Sanity check}
-    metadata$study_id %in% rownames(metabolon_n140_tbl)
-```
+
 
 
 4. Clustering (as an exploratory analysis)
