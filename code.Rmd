@@ -14,31 +14,35 @@ version
 ## 1. Uploading the packages
 ```{r Upload packages, message=FALSE}
 library("tidyverse")
+library("stringr")  # Work on string
 library("cluster")
 library("purrr")
 library("tableone")
 library("gplots")
-library("lme4")
-
+library("lme4")     # for GLM
 ```
 
 ## 2. Uploading the microbiome dataset.  
-```{r Upload the metabolomics dataset}
+```{r Upload the microbiome dataset}
 genus_tbl <- read_csv("./data/m35_n1005_Genus_Table.csv") 
 dim(genus_tbl)   # Row = 379 genera ; Col = 1005 subjects
 head(genus_tbl)
 ```
 
 ## 2.1. Create genus data by removing taxonomic ranks.
-```{r Create genus data}
-# Remove taxonomy -- the key is OTU
-genus_mat1 <- as.matrix(genus_tbl[,-c(1:7)])
-rownames(genus_mat1) <- genus_tbl$X1 # Genus(OTU code) as rowname
+```{r Prep genus data}
+# Combine OTU + genus variable
+genus_tbl$otu = str_c(genus_tbl$X1, genus_tbl$Genus, sep="_")
+head(genus_tbl$otu)
+
+# Remove taxonomy -- the key is OTU + genus
+genus_mat1 <- as.matrix(genus_tbl[,-c(1:7, 1013)])
+rownames(genus_mat1) <- genus_tbl$otu # Genus(OTU code) as rowname
 
 # Change to matrix
 glimpse(genus_mat1) # Row = 379 genera, col = 1005 subjects
 genus_mat <- t(genus_mat1) # Transpose
-glimpse(genus_mat) # Row = 1005 subjects, col = 379 genera, rownames=SampleID_NPA
+#glimpse(genus_mat) # Row = 1005 subjects, col = 379 genera, rownames=SampleID_NPA
 
 ```
 
@@ -46,7 +50,7 @@ glimpse(genus_mat) # Row = 1005 subjects, col = 379 genera, rownames=SampleID_NP
 ```{r Clearning sample ID}
 microbiota_df<-as.data.frame(genus_mat)
 head(microbiota_df)
-microbiota_df$SampleID_NPA <- rownames(genus_selected_mat) # Create variable SampleID_NPA
+microbiota_df$SampleID_NPA <- rownames(genus_mat) # Create variable SampleID_NPA
 
 # Remove extra text from SampleID_NPA:
 microbiota_df$SampleID_NPA <- gsub(pattern = "^Mansbach.", replacement = "", x = microbiota_df$SampleID_NPA)
@@ -78,10 +82,10 @@ dim(genus_selected_mat)    # rows=1005 subjects, cols=290 genera with SD >= lowe
 ```
 
 ##2.1. Create genus data by removing taxonomic ranks.
-```{r}
+```{r Finalize genus data}
 otu_tbl <- genus_tbl %>% select(c(2:7)) 
-rownames(otu_tbl) <- genus_tbl$X1 # Genus(OTU code) as rowname
-View(otu_tbl)
+rownames(otu_tbl) <- genus_tbl$otu # OUT_genus as rowname
+#View(otu_tbl)
 ```
 
 ## 3. Importing the metadata
@@ -92,8 +96,8 @@ dim(metadata) # rows=1005 subjects, col = 174 variables
 metadata_pam <- metadata %>% arrange(., by=SampleID_NPA)
 
 # Making sure if the order of sample ID:s matches across the datasets
-metadata$SampleID_NPA == rownames(microbiota_tbl) # Contain same sampleIDs in same order
-unique(metadata$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
+#metadata_pam$SampleID_NPA == rownames(microbiota_tbl) # Contain same sampleIDs in same order
+unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 
 ```
 
@@ -196,24 +200,25 @@ unique(metadata$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                                     FALSE)
             table(metadata_pam$IgE_cat2, useNA="ifany"); class(metadata_pam$IgE_cat2) 
     # Virology        
-        metadata_pam$RSVonly_NPA <- as.factor(metadata_pam$RSVonly_NPA)   
-            table(metadata_pam$RSVonly_NPA, useNA="ifany"); class(metadata_pam$RSVonly_NPA)   
-        metadata_pam$RVonly_NPA <- as.factor(metadata_pam$RVonly_NPA)   
-            table(metadata_pam$RVonly_NPA, useNA="ifany"); class(metadata_pam$RVonly_NPA)         
-        metadata_pam$RSVRV_NPA <- as.factor(metadata_pam$RSVRV_NPA)   
-            table(metadata_pam$RSVRV_NPA, useNA="ifany"); class(metadata_pam$RSVRV_NPA)    
+        metadata_pam$RSVonly <- as.factor(metadata_pam$RSVonly)   
+            table(metadata_pam$RSVonly, useNA="ifany"); class(metadata_pam$RSVonly)   
+        metadata_pam$RVonly<- as.factor(metadata_pam$RVonly)   
+            table(metadata_pam$RVonly, useNA="ifany"); class(metadata_pam$RVonly)         
+
+        metadata_pam$RSVA <- as.factor(metadata_pam$RSVA)   
+            table(metadata_pam$RSVA, useNA="ifany"); class(metadata_pam$RSVA)  
+        metadata_pam$RSVB <- as.factor(metadata_pam$RSVB)   
+            table(metadata_pam$RSVB, useNA="ifany"); class(metadata_pam$RSVB)
+        metadata_pam$RSV <- as.factor(metadata_pam$RSV)   
+            table(metadata_pam$RSV, useNA="ifany"); class(metadata_pam$RSV)   
+        metadata_pam$RV  <- as.factor(metadata_pam$HRV)   
+            table(metadata_pam$RV, useNA="ifany"); class(metadata_pam$HRV)  
+            
         metadata_pam$OTHERvirus <-NA
-            metadata_pam$OTHERvirus[metadata_pam$RSVonly_NPA==1 | metadata_pam$RVonly_NPA==1 | metadata_pam$RSVRV_NPA==1] <-FALSE    
-            metadata_pam$OTHERvirus[metadata_pam$RSVonly_NPA!=1 & metadata_pam$RVonly_NPA!=1 & metadata_pam$RSVRV_NPA!=1] <-TRUE
-            table(metadata_pam$OTHERvirus, useNA="ifany"); class(metadata_pam$OTHERvirus) 
-        metadata_pam$RSVA_NPA <- as.factor(metadata_pam$RSVA_NPA)   
-            table(metadata_pam$RSVA_NPA, useNA="ifany"); class(metadata_pam$RSVA_NPA)  
-        metadata_pam$RSVB_NPA <- as.factor(metadata_pam$RSVB_NPA)   
-            table(metadata_pam$RSVB_NPA, useNA="ifany"); class(metadata_pam$RSVB_NPA)
-        metadata_pam$RSV_NPA <- as.factor(metadata_pam$RSV_NPA)   
-            table(metadata_pam$RSV_NPA, useNA="ifany"); class(metadata_pam$RSV_NPA)   
-        metadata_pam$RV_NPA <- as.factor(metadata_pam$RV_NPA)   
-            table(metadata_pam$RV_NPA, useNA="ifany"); class(metadata_pam$RV_NPA)              
+            metadata_pam$OTHERvirus[metadata_pam$RSV==1 | metadata_pam$RV==1] <-FALSE    
+            metadata_pam$OTHERvirus[metadata_pam$RSV !=1 & metadata_pam$RV !=1] <-TRUE
+            table(metadata_pam$OTHERvirus, useNA="ifany"); class(metadata_pam$OTHERvirus)             
+            
     # O2 sat (3 missing)
         metadata_pam$o2sat_initial <- as.factor(metadata_pam$o2sat_initial)   
             table(metadata_pam$o2sat_initial, useNA="ifany"); class(metadata_pam$o2sat_initial)  
@@ -241,47 +246,40 @@ unique(metadata$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
             table(metadata_pam$site, useNA="ifany"); class(metadata_pam$site)  
     # Rec wheezing
           metadata_pam$recurrent_wheeze_sleep_36mo_cat <- factor(metadata_pam$recurrent_wheeze_sleep_36mo)
-            table(metadata_pam$recurrent_wheeze_sleep_36mo_cat, useNA="ifany"); class(metadata_pam$recurrent_wheeze_sleep_36mo_cat)         
+            table(metadata_pam$recurrent_wheeze_sleep_36mo_cat, useNA="ifany"); class(metadata_pam$recurrent_wheeze_sleep_36mo_cat)           #metadata_pam$recurrent_wheeze_36mo_cat <- factor(metadata_pam$recurrent_wheeze_36mo)
+          #  table(metadata_pam$recurrent_wheeze_36mo_cat, useNA="ifany"); class(metadata_pam$recurrent_wheeze_36mo_cat)
           metadata_pam$ICSuse_36mo_cat <- factor(metadata_pam$ICSuse_36mo)
             table(metadata_pam$ICSuse_36mo_cat, useNA="ifany"); class(metadata_pam$ICSuse_36mo_cat)   
 # Vitamin-D related compounds            
     # Total 25OHD
         summary(metadata_pam$vitd25_ngml)
         metadata_pam$vitd25_ngml_cat2 = 
-                    ifelse(metadata_pam$vitd25_ngml<24.8,  "Low (<24.8 ng/ml)",
-                    ifelse(metadata_pam$vitd25_ngml>=24.8, "High (>=24.8 ng/ml)",
+                    ifelse(metadata_pam$vitd25_ngml <26.5,  "Low (<26.5 ng/ml)",
+                    ifelse(metadata_pam$vitd25_ngml>=26.5, "High (>=26.5 ng/ml)",
                     NA))
             metadata_pam$vitd25_ngml_cat2 <- as.factor(metadata_pam$vitd25_ngml_cat2)
             table(metadata_pam$vitd25_ngml_cat2, useNA="ifany"); class(metadata_pam$vitd25_ngml_cat2)
     # Bioavailable vitD
         summary(metadata_pam$bioD)  # Unit = ng (same as vitd25)
                 metadata_pam$bioD2 = 
-                    ifelse(metadata_pam$bioD<3.8,  "Low (<3.8 ng/ml)",
-                    ifelse(metadata_pam$bioD>=3.8, "High (>=3.8 ng/ml)",
+                    ifelse(metadata_pam$bioD <4.2,  "Low (<4.2 ng/ml)",
+                    ifelse(metadata_pam$bioD>=4.2, "High (>=4.2 ng/ml)",
                     NA))
             metadata_pam$bioD2 <- as.factor(metadata_pam$bioD2)
             table(metadata_pam$bioD2, useNA="ifany"); class(metadata_pam$bioD2)
     # Free vitD -- dichotomize vs. quartiles -- Unit = pg (10^-12)
         summary(metadata_pam$freeD)  
             metadata_pam$freeD2 = 
-                    ifelse(metadata_pam$freeD<11.1,  "Low (<11.1 pg/ml)",
-                    ifelse(metadata_pam$freeD>=11.1, "High (>=11.1 pg/ml)",
+                    ifelse(metadata_pam$freeD <12.4,  "Low (<12.4 pg/ml)",
+                    ifelse(metadata_pam$freeD>=12.4, "High (>=12.4 pg/ml)",
                     NA))
                 metadata_pam$freeD2 <- as.factor(metadata_pam$freeD2)
                     table(metadata_pam$freeD2, useNA="ifany"); class(metadata_pam$freeD2)
-            metadata_pam$freeD4 = 
-                    ifelse(metadata_pam$freeD< 8.2, "Lowest",
-                    ifelse(metadata_pam$freeD>=8.2  & metadata_pam$freeD<11.1, "Second lowest",
-                    ifelse(metadata_pam$freeD>=11.1 & metadata_pam$freeD<19.5, "Second highest",
-                    ifelse(metadata_pam$freeD>=19.5, "Highest",
-                    NA))))
-                metadata_pam$freeD4 <- as.factor(metadata_pam$freeD4)
-                table(metadata_pam$freeD4, useNA="ifany"); class(metadata_pam$freeD4)
     # D-binding protein (DBP)
         summary(metadata_pam$dbp_ugml)  # Unit = microG 
                 metadata_pam$dbp2 = 
-                    ifelse(metadata_pam$dbp_ugml<142.3,  "Low (<142.3 ug/ml)",
-                    ifelse(metadata_pam$dbp_ugml>=142.3, "High (>=142.3 ug/ml)",
+                    ifelse(metadata_pam$dbp_ugml <143.3,  "Low (<143.3 ug/ml)",
+                    ifelse(metadata_pam$dbp_ugml>=143.3, "High (>=143.3 ug/ml)",
                     NA))
             metadata_pam$dbp2 <- as.factor(metadata_pam$dbp2)
             table(metadata_pam$dbp2, useNA="ifany"); class(metadata_pam$dbp2)      
@@ -294,12 +292,10 @@ unique(metadata$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
     ggplot(metadata_pam, aes(x=vitd25_ngml, y=freeD)) +
         geom_point() +
         geom_smooth(method='loess')+
-        coord_cartesian(xlim=c(0,50), ylim=c(0,40)) +
+        coord_cartesian(xlim=c(0,50), ylim=c(0,50)) +
         labs(title ="B)", legend="tab",
             x="Serum total 25OHD level (ng/ml)", y="Serum free 25OHD level (pg/ml)") 
 ```
-  
-  A) There was a significant correlation between serum total 25OHD and bioavailable 25OHD levels (Spearman r=0.73; P<0.001).  
   
 ```{r Correlation with total with free}
 # 2) with bioavailable
@@ -312,23 +308,8 @@ unique(metadata$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
             x="Serum total 25OHD level (ng/ml)", y="Serum bioavailable 25OHD level (ng/ml)")
 ```            
 
-  B) There was a significant correlation between serum total 25OHD and free 25OHD levels (Spearman r=0.66; P<0.001).
-The fitted lines represent locally weighted scatterplot smoothed (loess) curve, with 95% confidence intervals.
 
-                
-7. NOT USED: Output for Metaboanalyst software
-```{r Output for Metaboanalyst, eval=FALSE}
-# Create the dataset for Metaboanalyst (e.g., OPLS-DA)
-    metabolon_n140_output <- metabolon_n140_tbl  # Original metabolomics dataset has no study_id as a variable
-    metabolon_n140_output$study_id <- as.integer(rownames(metabolon_n140_output))
-    data_metaboanalyst_n140 <- metadata_pam %>%
-                            select(study_id, freeD2, vitd25_ngml_cat2, first_batch, second_batch) %>%
-                            inner_join(., metabolon_n140_output, by="study_id")
-# Output dataset (already processed)                   
-    write_csv(data_metaboanalyst_n140, "./data_metaboanalyst_processed_n140.csv")
-```
-
-8. Table 1 (Not needed for BST260)
+8. Table 1 
 ```{r Table 1, eval=FALSE}
     table1_tb <- metadata_pam %>% select (-c(study_id, SampleID))  # For Table 1, remove character variables
     vars <- names(table1_tb)[-1]
@@ -342,13 +323,13 @@ The fitted lines represent locally weighted scatterplot smoothed (loess) curve, 
                                          "intake_smoke", "intake_daycare", "breastmilk_mostly_3mo",
                                          "corticosteroids_life", "corticosteroids_pre",
                                          "IgE_cat2", "IgE_any_food", "aeroallergens_atopy","eos_4perc",
-                                         "RSVonly_NPA", "RVonly_NPA", "RSVRV_NPA", "OTHERvirus",
-                                         "RSV_NPA", "RV_NPA",
+                                         "RSVonly", "RVonly", "RSVRV", "OTHERvirus",
+                                         "RSV", "RV",
                                          "PAM4_m35", "LCA3ABC",
                                          "o2sat_initial", 
                                          "CPAPintubate", "inpatient_location___3","IntensiveTreatment", "LOS3dys",
                                          "recurrent_wheeze_sleep_36mo_cat", "ICSuse_36mo_cat",
-                                         "vitd25_ngml_cat2", "bioD2", "freeD2", "freeD4",
+                                         "vitd25_ngml_cat2", "bioD2", "freeD2", 
                                          "pam4_metabolomics"
                                          ))
           print(table1, nonnormal = c("Age_mo", "intch_weight","LOS_dys",
