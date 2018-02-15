@@ -43,7 +43,16 @@ rownames(genus_mat1) <- genus_tbl$otu # Genus(OTU code) as rowname
 glimpse(genus_mat1) # Row = 379 genera, col = 1005 subjects
 genus_mat <- t(genus_mat1) # Transpose
 #glimpse(genus_mat) # Row = 1005 subjects, col = 379 genera, rownames=SampleID_NPA
+```
 
+## 2.2. Remove genus with 0 abundance.
+```{r Remove genera with 0 abundance}
+sum_abundance <- genus_mat %>% apply(., 2, sum) # Calculte sum for each genera
+genus_zero_abundance <- sum_abundance==0 #indexing the genus with 0 abundance
+which(genus_zero_abundance==TRUE)  # UncuB720_g has 0 value
+
+genus_mat <- genus_mat[ ,genus_zero_abundance==FALSE]
+dim(genus_mat)    # rows=1005 subjects, cols=378 genera with abundance >= 0
 ```
 
 ## Clearning sample ID
@@ -81,10 +90,13 @@ genus_selected_mat <- genus_mat[,ind_lowest_iqr_sd==FALSE]
 dim(genus_selected_mat)    # rows=1005 subjects, cols=290 genera with SD >= lowest quartile
 ```
 
-##2.1. Create genus data by removing taxonomic ranks.
-```{r Finalize genus data}
-otu_tbl <- genus_tbl %>% select(c(2:7)) 
-rownames(otu_tbl) <- genus_tbl$otu # OUT_genus as rowname
+##2.3. Create OTU_genus data by removing taxonomic ranks.
+```{r Finalize OTU_genus data}
+otu_tbl <- genus_tbl %>% 
+             filter(.$otu != "UncuB720_g") %>% # remove genus with zero abundance
+             select(otu, 2:7)
+colnames(otu_tbl)
+rownames(otu_tbl) <- otu_tbl$otu # OUT_genus as rowname
 #View(otu_tbl)
 ```
 
@@ -92,15 +104,23 @@ rownames(otu_tbl) <- genus_tbl$otu # OUT_genus as rowname
 ```{r Import metadata, include=FALSE}
 library("readstata13")
 metadata <- read.dta13("./data/m35 _metadata_2018january_n1005.dta")
+#colnames(metadata)
 dim(metadata) # rows=1005 subjects, col = 174 variables
-metadata_pam <- metadata %>% arrange(., by=SampleID_NPA)
+metadata_pam <- metadata %>% 
+                  select (-c(study_id:enrolled_subj, site_region:site_region_lat,
+                             mo12_solidfood, mo30_cat_0to1:mo30_farmanimal_0to1,
+                             intch_lowestdoc_02sat:intch_hypertonic_saline,
+                             inpatient_hfo:inpatient_hel,
+                             Adenovirus:hMPVB_CT, myco_pneumoniae:hCoVHKU1,
+                             RnaseP:RnaseP_CT, atopy_ISAC_food5:total_conc_ku_l_r)) %>%  # remove unnecessary variables
+                  arrange(., by=SampleID_NPA)
 
 # Making sure if the order of sample ID:s matches across the datasets
 #metadata_pam$SampleID_NPA == rownames(microbiota_tbl) # Contain same sampleIDs in same order
 unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 
-```
 
+```
 
 ## 4. Recoding the metadata variables 
 ```{r Re-code metadata, message=FALSE}
@@ -117,11 +137,10 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
         metadata_pam$Agecat3[metadata_pam$Age_mo>=6] <- 3
             metadata_pam$Agecat3 <- as.factor(metadata_pam$Agecat3)
             table(metadata_pam$Agecat3, useNA="ifany"); class(metadata_pam$Agecat3)           
-    # Sex
-        metadata_pam$female = factor(metadata_pam$intake_sex,
-                               levels = c(1,2),
-                               labels = c("male", "female")) 
-            table(metadata_pam$female, useNA="ifany"); class(metadata_pam$female)   
+    # Sex  
+        metadata_pam$female = metadata_pam$intake_sex
+            table(metadata_pam$female, useNA="ifany"); class(metadata_pam$female)  
+                
     # Race/ethnicity
         metadata_pam$raceethn <- as.factor(metadata_pam$raceethn)
             table(metadata_pam$raceethn, useNA="ifany"); class(metadata_pam$raceethn)  
@@ -143,8 +162,8 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
         metadata_pam$mata_delivery <- factor(metadata_pam$mata_delivery)
             table(metadata_pam$mata_delivery, useNA="ifany"); class(metadata_pam$mata_delivery)
     # low birth wt  < 5 lb
-        metadata_pam$intake_child_weight_born <- factor(metadata_pam$intake_child_weight_born)
-            table(metadata_pam$intake_child_weight_born, useNA="ifany");          class(metadata_pam$intake_child_weight_born)    
+        metadata_pam$intake_child_weight_born <- as.numeric(metadata_pam$intake_child_weight_born)
+            table(metadata_pam$intake_child_weight_born, useNA="ifany");    class(metadata_pam$intake_child_weight_born)    
         metadata_pam$low_birth_wt <-NA
         metadata_pam$low_birth_wt[metadata_pam$intake_child_weight_born==1] <-TRUE
         metadata_pam$low_birth_wt[metadata_pam$intake_child_weight_born==2] <-TRUE
@@ -285,7 +304,7 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
             table(metadata_pam$dbp2, useNA="ifany"); class(metadata_pam$dbp2)      
 ```
                         
-6. Exploratory analysis: Correlations of total 25OHD with free and bioavailable 25OHD
+## 5. Exploratory analysis: Correlations of total 25OHD with free and bioavailable 25OHD
 ```{r Correlation with total with bioavailable}
 # 1) with Free
     cor.test(metadata_pam$vitd25_ngml, metadata_pam$freeD, method="spearman")
@@ -309,9 +328,10 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 ```            
 
 
-8. Table 1 
-```{r Table 1, eval=FALSE}
-    table1_tb <- metadata_pam %>% select (-c(study_id, SampleID))  # For Table 1, remove character variables
+## 6. Table 1 
+```{r Table 1, eval=TRUE}
+    #colnames(metadata_pam)
+    table1_tb <- metadata_pam %>% select (-c(intake_sex, HRV, genotype_RV))  # For Table 1, remove some variables
     vars <- names(table1_tb)[-1]
     table1<-CreateTableOne(vars = vars, strata = c("vitd25_ngml_cat2"), 
                            data=table1_tb,
@@ -323,14 +343,13 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                                          "intake_smoke", "intake_daycare", "breastmilk_mostly_3mo",
                                          "corticosteroids_life", "corticosteroids_pre",
                                          "IgE_cat2", "IgE_any_food", "aeroallergens_atopy","eos_4perc",
-                                         "RSVonly", "RVonly", "RSVRV", "OTHERvirus",
+                                         "RSVonly", "RVonly", "OTHERvirus",
                                          "RSV", "RV",
-                                         "PAM4_m35", "LCA3ABC",
+                                         "PAM4",
                                          "o2sat_initial", 
                                          "CPAPintubate", "inpatient_location___3","IntensiveTreatment", "LOS3dys",
                                          "recurrent_wheeze_sleep_36mo_cat", "ICSuse_36mo_cat",
-                                         "vitd25_ngml_cat2", "bioD2", "freeD2", 
-                                         "pam4_metabolomics"
+                                         "vitd25_ngml_cat2", "bioD2", "freeD2"
                                          ))
           print(table1, nonnormal = c("Age_mo", "intch_weight","LOS_dys",
                                        "intch_respiratory_rate",
@@ -343,63 +362,42 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 ```                     
 
 
-9. Prepation for the analysis using MixOmics 
+## 7. Prepation for the analysis using MixOmics 
 ```{r Prep for MixOmics}
-#1 X = Metabolomics data (X should be matrix)
-  dataMatrix_n140_merged <- as.matrix(metabolon_n140_tbl)
+#1 X = microbiota data (X should be matrix)
+  dataMatrix <- as.matrix(microbiota_tbl)
 #2 Y = Metadata (limited)
-      rownames(metadata_pam) <- metadata_pam$study_id
+      rownames(metadata_pam) <- metadata_pam$SampleID_NPA
   metadata_4vitd <- metadata_pam %>% select (vitd25_ngml, bioD, freeD, dbp_ugml)       
   metadata_3vitd <- metadata_pam %>% select (vitd25_ngml, bioD, freeD) #, dbp_ugml) 
   metadata_freeD <- metadata_pam %>% select (freeD) 
   metadata_total <- metadata_pam %>% select (vitd25_ngml) 
 #3 Sanity check    
-  rownames(dataMatrix_n140_merged) %in% rownames(metadata_pam)   
+  #rownames(dataMatrix) %in% rownames(metadata_pam)   # TRUE confirmed
  
 ```
 
-Not needed for BST260.
-```{r 1st + 2nd batch, eval=FALSE}
-## Create the train set (2nd batch, n=80) 
-            index_2ndB <- ID_data_n140$second_batch==1  # Index for 2nd batch
-        dataMatrix_n80_train  <- dataMatrix_n140_merged[index_2ndB==TRUE,]
-            
-        sampleMetadata_n80_train <- metadata_pam[index_2ndB==TRUE,] %>% 
-                        select(-c(study_id, chronic_cohort, n1005)) %>% 
-                        as.data.frame
-            rownames(sampleMetadata_n80_train) <- metadata_pam[index_2ndB==TRUE,]$study_id
-            rownames(dataMatrix_n80_train) %in% rownames(sampleMetadata_n80_train)
-## Create the test set (1st batch, n=60)   
-            index_1stB <- ID_data_n140$first_batch ==1 & ID_data_n140$overlap==0  # Index for 1st batch w/o overlap
-        dataMatrix_n60_test   <- dataMatrix_n140_merged[index_1stB==TRUE,]
-                    
-        sampleMetadata_n60_test <- metadata_pam[index_1stB==TRUE,] %>% 
-                        select(-c(study_id, chronic_cohort, n1005)) %>% 
-                        as.data.frame
-            rownames(sampleMetadata_n60_test) <- metadata_pam[index_1stB==TRUE,]$study_id
-            rownames(dataMatrix_n60_test) %in% rownames(sampleMetadata_n60_test)
-```
 
-
-10. Loading mixOmics  (http://mixomics.org/).
-Caution -- this package disables the deplyr "select" function.
+## 8. Loading mixOmics  (http://mixomics.org/).
+Caution -- this package disables the dplyr "select" function.
 ```{r Upload mixOmics, message=FALSE}
 library(mixOmics)  
 ```
 
 
-11. PCA    
+## 9. PCA    
 ```{r PCA}
-    X=dataMatrix_n140_merged
+    X=dataMatrix
 # Scree plot
     tune.pca(X, 
-             ncomp  = 10, # Plot the proportion of explained variance for min(n, p)principal components
+             ncomp  = 10,       # Plot the proportion of explained variance for min(n, p)principal components
              center = TRUE,     # Centering is a recommended transformation in most situations 
-             scale  = TRUE)     # Scaling aims to give similar weights to all genes in the analysis, since metabolites with high variance will be considered influential in PC
+             scale  = FALSE)     # TRUE  = scaling to give similar weights to all genera in the analysis 
+                                # if genera with high variance (with small abundance) be considered influential in PC
     pca_mixOmics <- pca(X, 
                         ncomp = 10, # First 2 components
                         center = TRUE,            
-                        scale  = TRUE) 
+                        scale  = FALSE) 
 # Individual plot
     ?plotIndiv
     plotIndiv(pca_mixOmics, 
@@ -408,15 +406,14 @@ library(mixOmics)
               group   = metadata_pam$vitd25_ngml_cat2, # Grouping by serum total 25OHD level
               ellipse = TRUE,  
               legend  = TRUE, legend.title = "Serum total 25OHD level",
-              title   = 'Serum metabolomics proflies, PCA components 1 and 2')
+              title   = 'NPA microbiota proflies, PCA components 1 and 2')
 ```
   
-  The PCA score plot shows an overlap of the overall metabolome profile between the high and low 25OHD groups.
-Here we observe that the major source of variation (in the overll metabolomic profiles) may not be explained by serum total 25OHD levels. 
+  The PCA score plot shows an overlap of the OVERALL microbiota profile between the high and low 25OHD groups.
 
 
 
-11.1. Correlation circle (variable) plot highlights clusters and show their contribution to each principal component.
+## 10. Correlation circle (variable) plot highlights clusters and show their contribution to each principal component.
 ```{r PCA Correlation circle plot}
       plotVar(pca_mixOmics, 
               comp = c(1, 2), 
