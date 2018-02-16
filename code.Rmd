@@ -26,7 +26,7 @@ library("lme4")     # for GLM
 ```{r Upload the microbiome dataset}
 genus_tbl <- read_csv("./data/m35_n1005_Genus_Table.csv") 
 dim(genus_tbl)   # Row = 379 genera ; Col = 1005 subjects
-head(genus_tbl)
+#head(genus_tbl)
 ```
 
 ## 2.1. Create genus data by removing taxonomic ranks.
@@ -51,28 +51,8 @@ sum_abundance <- genus_mat %>% apply(., 2, sum) # Calculte sum for each genera
 genus_zero_abundance <- sum_abundance==0 #indexing the genus with 0 abundance
 which(genus_zero_abundance==TRUE)  # UncuB720_g has 0 value
 
-genus_mat <- genus_mat[ ,genus_zero_abundance==FALSE]
+genus_mat <- genus_mat[ ,genus_zero_abundance==FALSE] # Remove 1 genus
 dim(genus_mat)    # rows=1005 subjects, cols=378 genera with abundance >= 0
-```
-
-## Clearning sample ID
-```{r Clearning sample ID}
-microbiota_df<-as.data.frame(genus_mat)
-head(microbiota_df)
-microbiota_df$SampleID_NPA <- rownames(genus_mat) # Create variable SampleID_NPA
-
-# Remove extra text from SampleID_NPA:
-microbiota_df$SampleID_NPA <- gsub(pattern = "^Mansbach.", replacement = "", x = microbiota_df$SampleID_NPA)
-microbiota_df$SampleID_NPA <- gsub(pattern = ("B|C|A$") , replacement = "", microbiota_df$SampleID_NPA)
-
-# Data not sorted -> Sort data:
-microbiota_df<-microbiota_df %>% arrange(., by=SampleID_NPA)
-
-# Genera data are changed to the tbl format.
-microbiota_tbl <- microbiota_df %>% tbl_df()
-rownames(microbiota_tbl) <- microbiota_tbl$SampleID_NPA #Set rownames
-microbiota_tbl <- microbiota_tbl %>% select (-SampleID_NPA) #Remove SampleID_NPA
-dim(microbiota_tbl) # rows=1005 subjects, cols=379
 ```
 
 ## Optional: Codes that remove the genera with lowest variability (the lowerst quartile). 
@@ -90,6 +70,59 @@ genus_selected_mat <- genus_mat[,ind_lowest_iqr_sd==FALSE]
 dim(genus_selected_mat)    # rows=1005 subjects, cols=290 genera with SD >= lowest quartile
 ```
 
+
+## Optional: Scaling
+```{r scaling, eval=FALSE}
+# Check the sd of genera 
+sd_abundance <- genus_mat %>% apply(., 2, sd) # Calculte sd for each genera
+ggplot() + aes(sd_abundance) + geom_histogram(binwidth=0.01, colour="black", fill="white")
+# Several OTUs have high SD, consider scaling.
+
+# Scaling (pareto vs. auto) -- mixOmics default -- scaling = TRUE
+   t_genus_mat <- t(genus_mat)
+        dim(t_genus_mat)  # Transpose for scaling
+        
+   paretoscale <- function(z) {
+            rowmean <- apply(z, 1, mean)        # row means
+            rowsd <- apply(z, 1, sd)            # row standard deviation
+            rowsqrtsd <- sqrt(rowsd)            # sqrt of sd
+            rv <- sweep(z, 1, rowmean,"-")      # mean center
+            rv <- sweep(rv, 1, rowsqrtsd, "/")  # divide by sqrtsd
+            return(rv)
+            }    
+    autoscale <- function(z) {
+            rowmean <- apply(z, 1, mean)        # row means
+            rowsd <- apply(z, 1, sd)            # row standard deviation
+            rv <- sweep(z, 1, rowmean,"-")      # mean center
+            rv <- sweep(rv, 1, rowsd, "/")      # divide by sd
+            return(rv)
+    } 
+# Apply scaling    
+   genus_scaled_mat <- t(autoscale(t_genus_mat))
+       dim(genus_scaled_mat)
+```
+
+## 2.4. Clearning sample ID and develop the final genus tbl
+```{r Clearning sample ID}
+microbiota_df<-as.data.frame(genus_mat)
+#head(microbiota_df)
+microbiota_df$SampleID_NPA <- rownames(genus_mat) # Create variable SampleID_NPA
+
+# Remove extra text from SampleID_NPA:
+microbiota_df$SampleID_NPA <- gsub(pattern = "^Mansbach.", replacement = "", x = microbiota_df$SampleID_NPA)
+microbiota_df$SampleID_NPA <- gsub(pattern = ("B|C|A$") , replacement = "", microbiota_df$SampleID_NPA)
+
+# Data not sorted -> Sort data:
+microbiota_df<-microbiota_df %>% arrange(., by=SampleID_NPA)
+
+# Genera data are changed to the tbl format.
+microbiota_tbl <- microbiota_df %>% tbl_df()
+rownames(microbiota_tbl) <- microbiota_tbl$SampleID_NPA #Set rownames
+microbiota_tbl <- microbiota_tbl %>% select (-SampleID_NPA) #Remove SampleID_NPA
+dim(microbiota_tbl) # rows=1005 subjects, cols=378
+```
+
+
 ##2.3. Create OTU_genus data by removing taxonomic ranks.
 ```{r Finalize OTU_genus data}
 otu_tbl <- genus_tbl %>% 
@@ -97,6 +130,7 @@ otu_tbl <- genus_tbl %>%
              select(otu, 2:7)
 colnames(otu_tbl)
 rownames(otu_tbl) <- otu_tbl$otu # OUT_genus as rowname
+dim(otu_tbl)
 #View(otu_tbl)
 ```
 
@@ -257,9 +291,14 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
         metadata_pam$eos_4perc <- as.factor(metadata_pam$eos_4perc)   
             table(metadata_pam$eos_4perc, useNA="ifany"); class(metadata_pam$eos_4perc)          
     # Microbiota clusters (PAM 4)
-        table(metadata_pam$PAM4_m35, useNA="ifany")         
-    # Orianne's clusters
-        table(metadata_pam$LCA3ABC, useNA="ifany"); class(metadata_pam$LCA3ABC)      
+        metadata_pam$PAM4_m35 = 
+                    ifelse(metadata_pam$PAM4==1, "Moraxella dominant",
+                    ifelse(metadata_pam$PAM4==2, "Haemophilus dominant",
+                    ifelse(metadata_pam$PAM4==3, "Mixed",
+                    ifelse(metadata_pam$PAM4==4, "Streptococcus dominant",
+                    NA))))
+          table(metadata_pam$PAM4_m35, useNA="ifany")         
+ 
     # site
         metadata_pam$site <- factor(metadata_pam$site)
             table(metadata_pam$site, useNA="ifany"); class(metadata_pam$site)  
@@ -331,7 +370,7 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 ## 6. Table 1 
 ```{r Table 1, eval=TRUE}
     #colnames(metadata_pam)
-    table1_tb <- metadata_pam %>% select (-c(intake_sex, HRV, genotype_RV))  # For Table 1, remove some variables
+    table1_tb <- metadata_pam %>% select (-c(intake_sex, HRV, genotype_RV, PAM4))  # For Table 1, remove some variables
     vars <- names(table1_tb)[-1]
     table1<-CreateTableOne(vars = vars, strata = c("vitd25_ngml_cat2"), 
                            data=table1_tb,
@@ -345,7 +384,7 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                                          "IgE_cat2", "IgE_any_food", "aeroallergens_atopy","eos_4perc",
                                          "RSVonly", "RVonly", "OTHERvirus",
                                          "RSV", "RV",
-                                         "PAM4",
+                                         "PAM4_m35",
                                          "o2sat_initial", 
                                          "CPAPintubate", "inpatient_location___3","IntensiveTreatment", "LOS3dys",
                                          "recurrent_wheeze_sleep_36mo_cat", "ICSuse_36mo_cat",
@@ -360,6 +399,7 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                             quote=TRUE, noSpaces = TRUE)         
 
 ```                     
+  In Table 1, between the low and high total 25OH groups, there are significant differences in severity, alpha-diversity measures, and microbiota profiles (in PAM clusters that were developed previously -- see Hasegawa et at. Eur Respir J 2016).
 
 
 ## 7. Prepation for the analysis using MixOmics 
@@ -392,12 +432,12 @@ library(mixOmics)
     tune.pca(X, 
              ncomp  = 10,       # Plot the proportion of explained variance for min(n, p)principal components
              center = TRUE,     # Centering is a recommended transformation in most situations 
-             scale  = FALSE)     # TRUE  = scaling to give similar weights to all genera in the analysis 
+             scale  = TRUE)     # TRUE  = scaling to give similar weights to all genera in the analysis 
                                 # if genera with high variance (with small abundance) be considered influential in PC
     pca_mixOmics <- pca(X, 
                         ncomp = 10, # First 2 components
                         center = TRUE,            
-                        scale  = FALSE) 
+                        scale  = TRUE) 
 # Individual plot
     ?plotIndiv
     plotIndiv(pca_mixOmics, 
@@ -423,20 +463,20 @@ library(mixOmics)
 
       
 
-12. Partial Least Squares Discriminant Analysis (PLS-DA)  
+## 11. Partial Least Squares Discriminant Analysis (PLS-DA) -- Y should be binary.
 For a discriminant analysis, we set the factor Y that indicates the total 25OH level (dichotomized by the median level) of each subject
 ```{r PLS-DA}
-    X = dataMatrix_n140_merged    
+    X = dataMatrix    
     Y = metadata_pam$vitd25_ngml_cat2
 # To evaluate the performance and the number of components necessary for the final model
-        plsda_vitd25 <- plsda(X, 
-                              Y, 
-                              mode = "canonical",
-                              ncomp = 2,  
-                              scale=TRUE)  
+    plsda_vitd25 <- plsda(X, 
+                          Y, 
+                          mode = "regression", 
+                          ncomp = 5,  
+                          scale = TRUE)  
 ```
 
-12.1. Sample plot - The individuals are projected into the subspace spanned by the first 2 PLS-DA components. 
+## 11.1. Sample plot - The individuals are projected into the subspace spanned by the first 2 PLS-DA components. 
 ```{r PLS-DA sample plot}
         plotIndiv(plsda_vitd25, 
                   comp = 1:2,
@@ -444,18 +484,21 @@ For a discriminant analysis, we set the factor Y that indicates the total 25OH l
                   group = Y, 
                   col.per.group = c("orange", "royalblue1"),
                   style = 'ggplot2', alpha = 0.1, ind.names = FALSE,
-                  star = TRUE,
-                  ellipse = TRUE, ellipse.level =0.95, 
+                  #star = TRUE,
+                  #ellipse = TRUE, ellipse.level =0.95, 
+                  xlim = c(-10,20), ylim = c(-10, 10),  # coordinate ranges
                   legend = TRUE, legend.title = "Serum total 25OHD status", 
                   size.legend.title=10, size.legend=10,
                   size.xlabel =8, size.ylabel = 8,
                   title = "PLS-DA sample plot", size.title=10)
 ```
   
-  There is a larger separation (and an overlap) of the two 25OHD groups compared to the unsupervised PCA sample plot. Confidence ellipses for each group are plotted to highlight the strength of the discrimination.  
+  There is some separation (and an overlap) of the two 25OHD groups compared to the unsupervised PCA sample plot. 
+  Both PC 1 and 2 appear to give seperation of total 25OHD groups.
+  
 
 
-12.2. The prediction area is visualised by calculating a background surface first before overlaying the sample plot.
+## 11.2. The prediction area is visualised by calculating a background surface first before overlaying the sample plot.
 ```{r PLS-DA projection}
   background = background.predict(plsda_vitd25, 
                                   comp.predicted=2, 
@@ -465,22 +508,24 @@ For a discriminant analysis, we set the factor Y that indicates the total 25OH l
             comp = 1:2,
             group = Y, 
             ind.names = FALSE, title = "Maximum distance",
+            col.per.group = c("orange", "royalblue1"),
+            xlim = c(-10,20), ylim = c(-10, 10),  # coordinate ranges
             legend = TRUE, legend.title = "Serum total 25OHD level",
             background = background)   
 ```
     
-12.3. Classification performance of the PLS-DA model is assessed with the perf function with 10-fold cross-validation repeated 100 times. 
+## 11.3. Classification performance of the PLS-DA model is assessed with the perf function with 10-fold cross-validation repeated 100 times. 
 ```{r PLS-DA classification performance}
         set.seed(1) # for reproducibility, only when the `cpus' argument is not used
   perf_plsda_vitd25<- perf(plsda_vitd25, 
                           validation = "Mfold", folds = 10, # 10-fold cross-validation
-                          nrepeat = 100, # for an accurate estimation, 50-100 repeats
+                          nrepeat = 50, # for an accurate estimation, 50-100 repeats
                           progressBar = FALSE, 
                           auc = TRUE)   # AUC calculation for later
   perf_plsda_vitd25$error.rate  
 ```
 
-12.4. Performance plot: the optimal number of components based on t-tests that test for a significant difference in the mean error rate between components
+## 11.4. Performance plot: the optimal number of components based on t-tests that test for a significant difference in the mean error rate between components
 ```{r PLS-DA performance plot}
   plot(perf_plsda_vitd25, 
       col = color.mixo(5:7), 
@@ -492,18 +537,20 @@ For a discriminant analysis, we set the factor Y that indicates the total 25OH l
   
   From the performance plot, the overall error rate and the Balanced Error Rate (BER) are similar and lower with the number of components of 2.  
 
-12.5. AUC plot: AUC is calculated from training cross-validation sets and averaged.
+## 11.5. AUC plot: AUC is calculated from training cross-validation sets and averaged.
 ```{r AUC plot}
   auc.plsda = auroc(plsda_vitd25, 
                     roc.comp = 1:2)  # Number of components in the model
 ```
 
 
-13. Sparse PLS-DA
-PLS-DA is built on all metabolites, many of which may be uninformative to characterize the different groups. 
-By contrast, sPLS-DA analysis aims to identify a small subset of metabolites that best discriminate the classes.  
 
-13.1. First to estimate the classification performance (error rates) with respect to the number of selected variables in the model with the use of tune function
+
+## 13. Sparse PLS-DA
+PLS-DA is built on all genera, many of which may be uninformative to characterize the different groups. 
+By contrast, sPLS-DA analysis aims to identify a small subset of genera that best discriminate the classes.  
+
+## 13.1. First to estimate the classification performance (error rates) with respect to the number of selected variables in the model with the use of tune function
 ```{r sPLS-DA Training, warning=FALSE}
 # Grid of possible keepX values that will be tested for each component
   list.keepX <- seq(5, 50, by=5)
@@ -517,8 +564,8 @@ By contrast, sPLS-DA analysis aims to identify a small subset of metabolites tha
                             dist = 'max.dist', 
                             measure = "BER",
                             scale=TRUE,
-                            progressBar = FALSE) 
-                            #, cpus = 8)  # Change the number of parallel CPUs to speed up
+                            progressBar = FALSE, 
+                            cpus = 8)  # Change the number of parallel CPUs to speed up
   
 ## error rate per component for the keepX grid     
   error <- tune_plsda_vitd25$error.rate  
@@ -532,20 +579,20 @@ By contrast, sPLS-DA analysis aims to identify a small subset of metabolites tha
 ```
   
   
-  A number of 2 components is sufficient for our final sPLS-DA model to reach optimal performance. The number of metabolites in the sparse model would be 5-20.
+  A number of 2 components is sufficient for our final sPLS-DA model to reach optimal performance. The number of genera in the sparse model would be 5-20.
 
 
-13.2. SPLS-DA final model.
-The final model includes 2 components with 5 and 15 selected variables on the components.
+## 13.2. SPLS-DA final model.
+The final model includes 2 components with 10-20 and 10-20 (these numbers can be flexible) selected variables on the components.
 ```{r sPLS-DA FINAL model}
 splsda_vitd25 <- splsda(X, Y, 
                         ncomp = 2,  # from the results above
-                        mode = "canonical",
+                        mode = "regression",
                         scale = TRUE,
-                        keepX = c(5,15))  
+                        keepX = c(20,20))  
 ```
 
-13.3. SPLS-DA Sample plot
+## 13.3. SPLS-DA Sample plot
 ```{r sPLS-DA FINAL Sample plot}
   plotIndiv(splsda_vitd25, 
             comp = c(1,2),
@@ -554,7 +601,8 @@ splsda_vitd25 <- splsda(X, Y,
             col.per.group = c("orange", "royalblue1"),
             ind.names = FALSE, 
             ellipse = TRUE,   ellipse.level =0.95,
-            star = TRUE,
+            #star = TRUE,
+            xlim = c(-5,5), ylim = c(-3, 6),  # coordinate ranges
             legend = TRUE, legend.title = "Serum total 25OHD status", 
             size.legend.title=10, size.legend=10,
             style = 'ggplot2', alpha = 0.1, 
@@ -563,25 +611,26 @@ splsda_vitd25 <- splsda(X, Y,
 ```
 
 
-13.4. sPLS-DA AUC plot
+## 13.4. sPLS-DA AUC plot
 ```{r sPLS-DA AUC plot}
   auc.splsda = auroc(splsda_vitd25, roc.comp = 2)
 ```
 
-13.5. Classification performance assessment of the final sPLS-DA model with 5 cross-validation repeated 100 times.
+## 13.5. Classification performance assessment of the final sPLS-DA model with 5 cross-validation repeated 50-100 times.
 ```{r Final sPLS-DA model, warning=FALSE}
      set.seed(1) # for reproducibility
    perf.splsda <- perf(splsda_vitd25, 
-                       validation = "Mfold", folds = 5, nrepeat=100,
+                       validation = "Mfold", folds = 5, nrepeat=50, #50-100 repeats recommended
                        dist = "all", 
-                       progressBar = FALSE)    
+                       progressBar = FALSE,
+                       cpus = 8) # parallel computing    
     perf.splsda$error.rate
     plot(perf.splsda) 
 ```
 
 
-13.6. Examinining the stability of the variables selected across the different cross-validation folds. 
-(e.g., if 100%, the metabolite is selected in all cross-validation folds)
+## 13.6. Examinining the stability of the variables selected across the different cross-validation folds. 
+(e.g., if 100%, the genus is selected in all cross-validation folds)
 ```{r sPLS-DA stability}
 # Each variable's stability that is selected across the CV runs is represented with a vertical bar   
       par(mfrow=c(1,2))
@@ -607,7 +656,7 @@ splsda_vitd25 <- splsda(X, Y,
 ```
 
 
-13.7. sPLS-DA loading plots
+## 13.7. sPLS-DA loading plots
 ```{r sPLS-DA loading plot for comp 1, eval=FALSE}
   plotLoadings(splsda_vitd25, 
                comp = 1, 
@@ -624,8 +673,8 @@ splsda_vitd25 <- splsda(X, Y,
                method = 'mean') 
 ```
 
-13.8. sPLS-DA heatmap
-```{r sPLS-DA heatmap, fig.height=7, fig.width=7}
+## 13.8. sPLS-DA heatmap
+```{r sPLS-DA heatmap, fig.height=7, fig.width=7, eval=FALSE}
 # Prep for the grouping (color) by patient class        
     heatmap_df <- data.frame(study_id = rownames(metadata_pam),   # You need study ID in the data
                              vitd25_ngml_cat2 = metadata_pam$vitd25_ngml_cat2)
@@ -639,7 +688,7 @@ splsda_vitd25 <- splsda(X, Y,
       clust.method = c("centroid", "centroid"),
       cluster = "both",
          xlab="Patients",
-         ylab="Metabolites",
+         ylab="Genera",
       row.sideColors = patient.col, row.names = TRUE,
          title ="Component 1",
          legend=list(title="Serum total 25OHD status"),
@@ -647,10 +696,9 @@ splsda_vitd25 <- splsda(X, Y,
           
 ```
   
-  The heatmap showed some clustering of the metabolites and decent (but incompelte) seperation of the two 25OHD groups.
+ 
 
-
-13.9. Get the loading vectors from PLS-DA model. These will be used for the regression later.
+## 13.9. Get the loading vectors from PLS-DA model. These will be used for the regression later.
 ```{r Loading vectors from PLS-DA}
 loading_PLSDA <-as.data.frame(splsda_vitd25$loadings[[1]]) 
         loading_PLSDA$metabolite <- rownames(loading_PLSDA)  # Add a row for metabolites
@@ -664,48 +712,51 @@ intersect(loading_PLSDA_comp1, loading_PLSDA_comp2)
 ```
 
 
-14. Partial Least Squares (PLS) regrssion modeling the three serum vitamin D levels (total, bioavailable, and free 25OHDs).  Instead of the dichotomised 25OHD levels used in the PLS-DA analysis above (which loses the informaiton of continous variable), here we use the continous values of serum 25OHD levels in an attempt to explain the 25OHD levels with respect to the metabolite levels.   
+
+
+
+## 14. Partial Least Squares (PLS) regrssion.  Instead of the dichotomised total 25OHD levels used in the PLS-DA analysis above (which loses the informaiton of continous variable), here we use the continous values of serum 25OHD levels in an attempt to explain the 25OHD levels with respect to the genus abundances   
 
 First, we used PLS and then followed with the sparse variation sPLS for comparison. 
 ```{r PLS}
-    X = dataMatrix_n140_merged
+    X = dataMatrix
     Y = metadata_total   #total 25OHD only
     Y3= metadata_3vitd   # 3 compounds
     Y4= metadata_4vitd   # 4 compounds
 # The first step is to tune the key parameters by using perf().
     npa_pls <- pls(X, 
-                   Y3, 
-                   ncomp = ncol(Y3), 
+                   Y, 
+                   ncomp = 10, 
                    mode = "regression",
                    scale  = TRUE)
     #Tune function cannot be used for the canonical mode
-          set.seed(100)
+          set.seed(1)
     tune.pls <- perf(npa_pls,       
                      validation = "Mfold", folds = 10,     # 10-fold cross validation x 100 times
                      nrepeat = 100,
                      progressBar = FALSE) 
 
     plot(tune.pls$Q2.total)  # Q2.total to tune the number of components 
-        #abline(h=0.0975)     # The rule of thumbs is that a PLS component should be included in the model if its value >= 0.0975.
+        #abline(h=0.0975)   # The rule of thumbs is that a PLS component should be included in the model if its value >= 0.0975.
         tune.pls$Q2.total
 ```
 
 
-
-13. Sparse PLS (sPLS). 
+## 15. Sparse PLS (sPLS). 
 sPLS combines both integration and variable selection to maximize the covariance between two data sets and to identify latent variables. 
 ```{r sparse PLS}
-    ncomp=ncol(Y3) # When canonical mode is used, the num of components is <= ncol(Y) (number of variables in Y)
-    #ncomp=10
+    #ncomp=ncol(Y) # When canonical mode is used, the num of components is <= ncol(Y) (number of variables in Y)
+    ncomp=2
     npa_spls <- spls(X, 
-                     Y3, 
+                     Y, 
                 ncomp = ncomp,                  
-                keepX = c(5,15,25),  
-                keepY = rep(ncol(Y3),  length=ncomp),   
+                keepX = c(20,20),  # I would choose 10-20 for each
+                keepY = rep(ncol(Y),  length=ncomp),   
                 scale = TRUE,
-                mode = "canonical")  # Options: "regression", "canonical", "invariant", "classic"
+                mode = "regression")  # Options: "regression", "canonical", "invariant", "classic"
 ```
 
+## Perf function -- not for cannoical mode.
 ```{r sPLS perf -- Not used for cannonical mode, eval=FALSE}
       set.seed(1)  
     tune.spls <- perf(npa_spls, 
@@ -719,34 +770,34 @@ sPLS combines both integration and variable selection to maximize the covariance
 ```
 
 
-13.1. sPLS sample plot represents the samples projected onto the sPLS components.
+## 15.1. sPLS sample plot represents the samples projected onto the sPLS components.
 ```{r sPLS Sample plot}
-
     plotIndiv(npa_spls, comp = c(1,2), 
               rep.space= 'XY-variate', 
               group = metadata_pam$vitd25_ngml_cat2,
               col.per.group = c("orange", "royalblue1"),
               style = 'ggplot2', alpha = 0.1, ind.names = FALSE,
-                  star = TRUE,
-                  ellipse = TRUE, ellipse.level = 0.95,
+                  #star = TRUE,
+                  #ellipse = TRUE, ellipse.level = 0.95,
+                  xlim = c(-5,6), ylim = c(-10,10),
                   legend = TRUE, legend.title = "Serum total 25OHD status", 
                   size.legend.title=10, size.legend=10,
                   size.xlabel =8, size.ylabel = 8,
                   title = "Sample plot of sPLS", size.title=0)
 ```   
   
-  Each dot represents the global serum metabolomic profile of a single patient by plotting the component scores in the smaller subspace spanned by latent variables of  sPLS model. The scatter plot indicates the similarities and dissimilarities in the global metabolomic profile between patients, grouped by serum total 25OHD levels (defined by the median values). The eclipses are 95% confidence intervals. The arrows start from the centroid of each group and end for each patient belonging to each group.
+  Each dot represents the global serum genus profile of a single patient by plotting the component scores in the smaller subspace spanned by latent variables of sPLS model. The scatter plot indicates the similarities and dissimilarities in the global microbiota profile between patients, grouped by serum total 25OHD levels (defined by the median values). 
   
 
-13.2. sPLS loading plot:
-```{r sPLS Loading plot comp 1, fig.height=5, fig.width=10, eval=FALSE}
+## 15.2. sPLS loading plot:
+```{r sPLS Loading plot comp 1, fig.height=5, fig.width=10, eval=TRUE}
   plotLoadings(npa_spls, 
                comp = 1, 
                title = 'Loadings on comp 1', 
                contrib = 'max', 
                method = 'mean') 
 ```
-```{r sPLS Loading plot comp2, fig.height=5, fig.width=10, eval=FALSE}
+```{r sPLS Loading plot comp2, fig.height=5, fig.width=10, eval=TRUE}
   plotLoadings(npa_spls, 
                comp = 2, 
                title = 'Loadings on comp 2', 
@@ -754,7 +805,7 @@ sPLS combines both integration and variable selection to maximize the covariance
                method = 'mean')  
 
 ```
-```{r Integrated loading plot}
+```{r Integrated loading plot, eval=FALSE}
 # First unload mixOmics and upload dplyr to use the "select" function
       detach("package:mixOmics", unload=TRUE)
       detach("package:dplyr",    unload=TRUE)
@@ -782,10 +833,10 @@ sPLS combines both integration and variable selection to maximize the covariance
         xlab("Metabolite") + ylab("Loading")
 ```
   
-  The plot represents the loading coefficient of 20 serum metabolites that were selected from the sPLS regression model. The 20 metabolites were ranked according to their contribution to lower serum 25OHD (total, bioavailable, and free) (top to bottom).
+  The plot represents the loading coefficient of top genera that were selected from the sPLS regression model. 
 
 
-13.3. Heatmap 
+## 15.3. Heatmap 
 ```{r sPLS heatmap 1, fig.height=7, fig.width=8}
 # Heatmap 1
   library(mixOmics)
@@ -803,7 +854,7 @@ sPLS combines both integration and variable selection to maximize the covariance
           margins = c(7, 18)) 
 ```
   
-  The heatmap shows the correlations between the serum 25OHD (total, bioavailable, and free) and 20 selected metabolites that were examined using hierarchical clustering with average linkage algorithm.
+
 
 ```{r sPLS heatmap 2,  fig.height=5, fig.width=9, eval=FALSE}
 # Heatmap 2
@@ -828,7 +879,7 @@ sPLS combines both integration and variable selection to maximize the covariance
 
 ```      
 
-13.4. network
+## 15.4. network
 ```{r sPLS network, fig.height=5, fig.width=5, eval=FALSE}
       color.edge <- color.GreenRed(50)
   network(npa_spls, comp=1:2,
@@ -836,7 +887,8 @@ sPLS combines both integration and variable selection to maximize the covariance
           color.node = c("white", "pink"),
           color.edge = color.edge)
 ```
-13.5. Get the loading data from sPLS model
+
+## 15.5. Get the loading data from sPLS model
 ```{r Get laoding vectors from sPLS}
 loading_spls <-as.data.frame(npa_spls$loadings[[1]]) 
         loading_spls$metabolite <- rownames(loading_spls)  # Add a row for metabolites
@@ -850,181 +902,29 @@ intersect(loading_sPLS_comp1, loading_sPLS_comp2)
 ```
 
 
-16. Regression models: Here we examine the association between the each of the 20 selected 25OHD-related metabolites and the risk of positive pressure ventilation (PPV) use, the clincial outcome.  
-
-16.1. First to make a dataset containing both metabolomics and metadata
-```{r Regression prep}
-# First unload mixOmics and upload dplyr to use the "select" function
-      detach("package:mixOmics", unload=TRUE)
-      detach("package:dplyr",    unload=TRUE)
-      library(dplyr); library(broom)
-# Second, use the log-transformed (no scaling) data metabolon_n140_tbl
-  metabolon_n140_tbl_log2 <- log(metabolon_n140_tbl, base=2) 
-  metabolon_n140_tbl_log2$study_id <- rownames(metabolon_n140_tbl) %>% as.integer()
-# Third, integrate the datasets (non-log metabolomics + metadata)
-  ## sPLS
-    loading_sPLS_comp12 <- c(loading_sPLS_comp1, loading_sPLS_comp2)
-  data_regress_n140_sPLS <- metabolon_n140_tbl_log2 %>% 
-            select(loading_sPLS_comp12,  
-                   study_id) %>%   # Don't change the order
-            inner_join(., metadata_pam, by="study_id")  
-  #sPLS-DA
-    loading_PLSDA_comp12 <- c(loading_PLSDA_comp1, loading_PLSDA_comp2)
-  data_regress_n140_sPLSDA <- metabolon_n140_tbl_log2 %>% 
-            select(loading_PLSDA_comp12,  
-                   study_id) %>%   # Don't change the order
-            inner_join(., metadata_pam, by="study_id")  # 1-20 columns should be metabolites for the regression loop
-  # Decide 1) loading and 2) dataset for below
-  loading <- loading_sPLS_comp12
-  data_regress <-data_regress_n140_sPLS
-  
-```
-
-16.1. Linear correlation between total 25OHD level and each of the 20 metabolites selected from sPLS model
-```{r Linear regression}
-        coef_lm    <- numeric(length(loading))
-        se_lm      <- numeric(length(loading))
-        p.value_lm <- numeric(length(loading))
-  for (i in seq_along(loading)){
-       fit <- lm(vitd25_ngml ~ data_regress[[i]], data=data_regress)  #1-20 are metabolites
-       coef_lm[i]    <- summary(fit)$coefficients[2,1]  # Summary of 2nd row + 1st column = coef 
-       se_lm[i]      <- summary(fit)$coefficients[2,2]  # Summary of 2nd row + 1st column = se 
-       p.value_lm[i] <- summary(fit)$coefficients[2,4]  # Summary of 2nd row + 1st column = p-value 
-        }
-      
-      output_lm <- cbind(loading, coef_lm, se_lm, p.value_lm) %>% tbl_df()
-      output_lm$coef_lm    <- as.numeric(output_lm$coef_lm) %>% round (., digits =2)
-      output_lm$se_lm      <- as.numeric(output_lm$se_lm) %>% round (., digits =2)
-      output_lm$p.value_lm <- as.numeric(output_lm$p.value_lm)
-      output_lm$fdr_p <- as.numeric(output_lm$p.value_lm) %>% p.adjust(., "fdr") %>% round(., digits=4)
-      output_lm$p.value_lm <- output_lm$p.value_lm %>% round(., digits=4)
-
-  output_lm; 
-  output_lm %>% filter(., p.value_lm <0.05) # Of 20 metabolites, 10 are significantly correlated with the total 25OHD level (FDR <0.05).
-```
-
-16.2. Multivariable logistric regression adjusted for potential confounders (age, sex, history of premature birth, feeding status, weight at presentation, corticosteroid use, and detected virus)
-```{r}
-        est_logit <- numeric(length(loading))
-        se_logit  <- numeric(length(loading))
-        p.value_logit <- numeric(length(loading))
-for (i in seq_along(loading)){
-    fit <- glm(CPAPintubate ~ data_regress[[i]] 
-                 + Agecat2 
-                 + female  #+ raceethn 
-                 + premature37
-                 + breastmilk_mostly_3mo9 
-                 + intch_weight_cat2 
-                 + corticosteroids_pre
-                 + RSVonly_NPA #+ RVonly_NPA #+ vitd25_ngml
-                 , family=binomial, data=data_regress)  
-              est_logit[i] <- summary(fit)$coefficients[2,1]  # Needs to be exponentiated!
-              se_logit[i]  <- summary(fit)$coefficients[2,2]  # Needs to be exponentiated!
-              p.value_logit[i] <- summary(fit)$coefficients[2,4]
-              }
-    output_logit <- cbind(loading, 
-                          OR=exp(est_logit), LL=exp(est_logit-1.96*se_logit), UL=exp(est_logit+1.96*se_logit), 
-                          p.value_logit) %>%
-                          tbl_df()
-          output_logit$OR    <- as.numeric(output_logit$OR ) %>% round (., digits =2)
-          output_logit$LL    <- as.numeric(output_logit$LL ) %>% round (., digits =2)
-          output_logit$UL    <- as.numeric(output_logit$UL ) %>% round (., digits =2)      
-          output_logit$fdr_p <- as.numeric(output_logit$p.value_logit) %>% p.adjust(., "fdr") %>% round(., digits=3)
-          output_logit$p.value_logit <-as.numeric(output_logit$p.value_logit) %>% round(., digits=3)
-    output_logit
-    output_logit %>% filter(., fdr_p <=0.05) 
-```
-
-
-
-16.3. Rondom-effects models adjusting for the covariates above and accounting for potential patient clustering within the hospitals.
-```{r Random-effects}
-      library("lme4"); 
-              est_logit_ad <- numeric(length(loading))
-              se_logit_ad  <- numeric(length(loading))
-              p.value_logit_ad <- numeric(length(loading))
-  for (i in seq_along(loading)){
-        fit2 <- glmer(CPAPintubate ~ data_regress[[i]] 
-                 + Agecat2 
-                 + female #+ raceethn 
-                 + premature37
-                 + breastmilk_mostly_3mo9 
-                 + intch_weight_cat2 
-                 + corticosteroids_pre
-                 + RSVonly_NPA #+ RVonly_NPA  #+ vitd25_ngml
-                     + (1 | site),
-                      family=binomial, data=data_regress,
-                      control = glmerControl(optimizer = "bobyqa"))  
-              est_logit_ad[i] <- summary(fit2)$coefficients[2,1]  # Needs to be exponentiated!
-              se_logit_ad[i]  <- summary(fit2)$coefficients[2,2]  # Needs to be exponentiated!
-              p.value_logit_ad[i] <- summary(fit2)$coefficients[2,4]
-            }
-      adj_output_logit <- cbind(loading, 
-                                OR=exp(est_logit_ad), LL=exp(est_logit_ad-1.96*se_logit_ad), 
-                                UL=exp(est_logit_ad+1.96*se_logit_ad), 
-                                p.value_logit_ad) %>%
-                                tbl_df()
-          adj_output_logit$OR    <- as.numeric(adj_output_logit$OR) %>% round (., digits =2)
-          adj_output_logit$LL    <- as.numeric(adj_output_logit$LL) %>% round (., digits =2)
-          adj_output_logit$UL    <- as.numeric(adj_output_logit$UL) %>% round (., digits =2)      
-          adj_output_logit$fdr_p <- as.numeric(adj_output_logit$p.value_logit_ad) %>% p.adjust(., "fdr") %>% round(., digits=4)
-          adj_output_logit$p.value_logit_ad <-as.numeric(adj_output_logit$p.value_logit_ad) %>% round(., digits=4)
-   adj_output_logit
-   adj_output_logit %>% filter(., fdr_p <0.05) 
-```
-
-  Among these 20 metabolites, in the multivariable logistic regression models adjusting for potential confounders and the random-effects models accounting for site-effects, 9 metabolites were significantly associated with the risk of PPV use (all FDR<0.05). Specifically, among the metabolites that were correlated with lower 25OHD levels, 3 metabolites – fibrinopeptide A, methyladenosine, and sphingomyelin (d18:1/18:1, d18:2/18:0) – were associated with a significantly higher risk of PPV use (all FDR<0.05). By contrast, among the metabolites that were correlated with higher 25OHD levels, 6 metabolites – 1-(1-enyl-stearoyl)-2-oleoyl-glycerophosphorylethanolamine (GPE), 1-(1-enyl-stearoyl)-2-linoleoyl-GPE, isoursodeoxycholate, 1-linoleoyl-glycerophosphate (GPA), glycerate, and glycylvaline – were associated with a significantly lower risk of PPV use (all FDR<0.05).
-  
-
-16.4. ROC: AUC of the 20 metabolites vs. PPV risk is 0.90, indiating a good discrimination ability of the 20-metabolite model.
-```{r fig.height=5, fig.width=5}
-    #names(data_regress)            
-  data_auc <- data_regress[, c(1:20, 81)] # Create another dataset that includes 20 metabolites and PPV
-    #names(data_auc)
-# Compute AUC for predicting Class with the variable CreditHistory.Critical
-  mylogit <- glm(CPAPintubate ~ ., 
-                 data = data_auc, family = "binomial")
-    #summary(mylogit)
-  prob=predict(mylogit,type=c("response"))
-  data_auc$prob=prob
-
-library(pROC);   
-    g <- roc(CPAPintubate ~ prob, data = data_auc)
-    auc(g)
-    ggroc(g)      
-```
-  
-  The ROC curve estimates the discrimination ability of the selected 20 metabolites on the risk of PPV use. The area-under-the estimated receiver operating characteristic curve (AUC) was 0.92, indicating that a high discrimination ability of the 20-metabolite model.
-
-## Conclusion
-  Based on the data from a prospective multicenter cohort of infants hospitalized for bronchiolitis, the serum 25OHD levels were associated with differences in the serum metabolome profile. Specifically, from all metabolites detected, we identified a set of 20 metabolites – a metabolomic signature, which was associated with circulating 25OHD (total, bioavailable, and free) levels. Among these, metabolites correlated with lower 25OHD (e.g., sphingolipids) were associated with a significantly higher risk of PPV use. In contrast, metabolites correlated with higher 25OHD (e.g., plasmalogen pathway metabolites [GPE and GPA]) were associated with a significantly lower risk of PPV use. Although causal inference remains premature, prior research and our observations collectively suggest that circulating 25OHD, through affecting metabolites associated with inflammatory processes, influences bronchiolitis severity. Our data should advance research into the complex interrelations between the environmental factors (e.g., vitamin D), host immunity, and the pathobiology of bronchiolitis in infants.    
-
-
-
-Optional -- Random forest. The selected metabolites are somewhat different from those in the sPLS models above.
+## 16.  Random forest. 
 ```{r random forrest}
 library(randomForest); library(caret)
 # Make training dataset
-  metabolon_n140_tbl_rf <- metabolon_n140_tbl
-  metabolon_n140_tbl_rf$study_id <- rownames(metabolon_n140_tbl) %>% as.integer()
-  metabolon_n140_tbl_rf <- metadata_pam %>% 
-                            select(study_id, vitd25_ngml_cat2) %>%
-                            inner_join(., metabolon_n140_tbl_rf, by="study_id") %>%
-                            select(-study_id)
-  rownames(metabolon_n140_tbl_rf) <- rownames(metabolon_n140_tbl)
-
+  microbiota_tbl_rf <- microbiota_tbl
+  microbiota_tbl_rf$SampleID_NPA <- rownames(microbiota_tbl) %>% as.integer()
+  microbiota_tbl_rf <- metadata_pam %>% 
+                            select(SampleID_NPA, vitd25_ngml_cat2) %>%
+                            inner_join(., microbiota_tbl_rf, by="SampleID_NPA") %>%
+                            select(-SampleID_NPA)
+  rownames(microbiota_tbl_rf) <- rownames(microbiota_tbl)
 
 # Parallel computing
     library("doMC")        
     registerDoMC(cores = 8) ## All subsequent models are then run in parallel
 # Fit random forrest  
   set.seed(1)
-  rf_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all 479 metabolites
-                  data=metabolon_n140_tbl_rf,
+  rf_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all genera
+                  data=microbiota_tbl_rf,
                   method="rf", 
                   #preProcess = c('center', 'scale'),
-                  tuneLength = 4,  # Try 4 different values for each parameter
-                  trControl = trainControl(method = "cv", number = 10), # Cross validation
+                  tuneLength = 3,  # Try 3 different values for each parameter
+                  trControl = trainControl(method = "cv", number = 10), # 10-fold Cross validation
                   prox=TRUE) 
   rf_fit
 # Check the variable importance 
@@ -1033,67 +933,12 @@ library(randomForest); library(caret)
 
 
 
-20. Other ml methods (not run)
-```{r eval=FALSE}
-# Prep for caret machine learning --------------------------------------------------
-    library(caret)
-  ## Make training dataset
-            dataMatrix_n80_train_tbl <- tbl_df(dataMatrix_n80_train)
-            dataMatrix_n80_train_tbl$study_id <- rownames(dataMatrix_n80_train) %>% as.integer()
-        training_rf_n80 <- metadata_pam[index_2ndB==TRUE,] %>% 
-                            select(study_id, vitd25_ngml_cat2) %>%
-                            inner_join(., dataMatrix_n80_train_tbl, by="study_id") %>%
-                            select(-study_id)
-            rownames(training_rf_n80) <- dataMatrix_n80_train_tbl$study_id
-   ## Make testing dataset         
-            dataMatrix_n60_train_tbl <- tbl_df(dataMatrix_n60_test)
-            dataMatrix_n60_train_tbl$study_id <- rownames(dataMatrix_n60_test) %>% as.integer()
-        testing_rf_n60 <- metadata_pam[index_1stB==TRUE,] %>% 
-                            select(study_id, vitd25_ngml_cat2) %>%
-                            inner_join(., dataMatrix_n60_train_tbl, by="study_id") %>%
-                            select(-study_id)
-            rownames(testing_rf_n60) <- dataMatrix_n60_train_tbl$study_id
-   ## Parallel computing
-    library("doMC")        
-    registerDoMC(cores = 8) ## All subsequent models are then run in parallel
-     #library(doParallel)
-     #cl <- makePSOCKcluster(8)
-     #registerDoParallel(cl)
-   
-# Neural network --------------------------------------------------           
-    ## Training
-        set.seed(0)
-        nnet_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all 479 metabolites
-                        data=training_rf_n80,
-                        method="nnet", 
-                        #preProcess = c('center', 'scale'),
-                        tuneLength = 4,  # Try 4 different values for each parameter
-                        trControl = trainControl(method = "cv", number = 10), # Cross validation
-                        linout=FALSE, #Classifcation
-                        prox=TRUE)     
-             nnet_fit
-    ## Testing
-        pred_nnet <- predict(nnet_fit, testing_rf_n60)
-        confusionMatrix(data=pred_nnet, testing_rf_n60$vitd25_ngml_cat2)  
 
-           
-# Xgboost --------------------------------------------------          
-    ## Training
-            set.seed(0)
-       Xgboost_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all 479 metabolites
-                        data=training_rf_n80,
-                        method="xgbTree", 
-                        #preProcess = c('center', 'scale'),
-                        tuneLength = 4,  # Try 4 different values for each parameter
-                        trControl = trainControl(method = "cv", number = 10), # Cross validation
-                        linout = FALSE,  # For classifcation analysis
-                        prox=TRUE)     
-             Xgboost_fit           
-    ## Testing
-        pred_Xgboost <- predict(Xgboost_fit, testing_rf_n60)
-        confusionMatrix(data=pred_Xgboost, testing_rf_n60$vitd25_ngml_cat2)  
-           
-           
-           
+## 17. Regression models: Here we examine the association between the each of the 20 selected 25OHD-related genera and the risk of positive pressure ventilation (PPV) use, the clincial outcome.  
+```{r}
+
 ```
+
+
+
 
