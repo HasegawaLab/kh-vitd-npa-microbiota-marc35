@@ -902,43 +902,191 @@ intersect(loading_sPLS_comp1, loading_sPLS_comp2)
 ```
 
 
-## 16.  Random forest. 
-```{r random forrest}
+## 16.  Random forest, total 25OHD as binary 
+```{r random forrest for binary}
+# First unload mixOmics and upload dplyr to use the "select" function
+      detach("package:mixOmics", unload=TRUE)
+      detach("package:dplyr",    unload=TRUE)
+      library(dplyr);
 library(randomForest); library(caret)
-# Make training dataset
+
+# Make rf dataset
   microbiota_tbl_rf <- microbiota_tbl
   microbiota_tbl_rf$SampleID_NPA <- rownames(microbiota_tbl) %>% as.integer()
-  microbiota_tbl_rf <- metadata_pam %>% 
+  microbiota_tbl_rf_cat <- metadata_pam %>% 
                             select(SampleID_NPA, vitd25_ngml_cat2) %>%
                             inner_join(., microbiota_tbl_rf, by="SampleID_NPA") %>%
                             select(-SampleID_NPA)
-  rownames(microbiota_tbl_rf) <- rownames(microbiota_tbl)
+  rownames(microbiota_tbl_rf_cat) <- rownames(microbiota_tbl)
 
 # Parallel computing
     library("doMC")        
     registerDoMC(cores = 8) ## All subsequent models are then run in parallel
 # Fit random forrest  
   set.seed(1)
-  rf_fit <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all genera
-                  data=microbiota_tbl_rf,
+  rf_fit_cat <- train(vitd25_ngml_cat2 ~.,  # by specifing ".", enter all genera
+                  data=microbiota_tbl_rf_cat,
                   method="rf", 
                   #preProcess = c('center', 'scale'),
                   tuneLength = 3,  # Try 3 different values for each parameter
                   trControl = trainControl(method = "cv", number = 10), # 10-fold Cross validation
-                  prox=TRUE) 
-  rf_fit
+                  prox=TRUE,
+                  importance=T) 
+  rf_fit_cat
 # Check the variable importance 
-  varImp(rf_fit, scale=FALSE)
+  Imp_variables_cat <- varImp(rf_fit_cat, scale=FALSE, 20)
+  Imp_variables_cat_df <- as.data.frame(Imp_variables_cat[1])
+  Imp_variables_cat_df$variable_rf_cat <- rownames(Imp_variables_cat_df)
+# Create a vector of the top 20 genera
+  rf_cat_top20 <- Imp_variables_cat_df %>% arrange(desc(Overall)) %>% .[1:20, "variable_rf_cat"]
+  rf_cat_top20
+```
+
+## 17.  Random forest, total 25OHD as continuous variable
+```{r random forrest, 25OHD as continuous}
+#Dataset
+  microbiota_tbl_rf_cont <- metadata_pam %>% 
+                            select(SampleID_NPA, vitd25_ngml) %>%
+                            inner_join(., microbiota_tbl_rf, by="SampleID_NPA") %>%
+                            select(-SampleID_NPA)
+  rownames(microbiota_tbl_rf_cont) <- rownames(microbiota_tbl)
+  
+# Fit random forrest  
+  set.seed(1)
+  rf_fit_cont <- train(vitd25_ngml ~.,  # by specifing ".", enter all genera
+                  data=microbiota_tbl_rf_cont,
+                  method="rf", 
+                  #preProcess = c('center', 'scale'),
+                  tuneLength = 3,  # Try 3 different values for each parameter
+                  trControl = trainControl(method = "cv", number = 10), # 10-fold Cross validation
+                  prox=TRUE,
+                  importance=T) 
+  rf_fit_cont
+  
+# Check the variable importance 
+  Imp_variables_cont <- varImp(rf_fit_cont, scale=FALSE, 20)
+  Imp_variables_cont_df <- as.data.frame(Imp_variables_cont[1])
+  Imp_variables_cont_df$variable_rf_cont <- rownames(Imp_variables_cont_df)
+# Create a vector of the top 20 genera
+  rf_cont_top20 <- Imp_variables_cont_df %>% arrange(desc(Overall)) %>% .[1:20, "variable_rf_cont"]
+  rf_cont_top20
 ```
 
 
 
 
-## 17. Regression models: Here we examine the association between the each of the 20 selected 25OHD-related genera and the risk of positive pressure ventilation (PPV) use, the clincial outcome.  
+## 18. Regression models: Here we examine the association between the each of the 20 selected genera and the risk of severity, the clincial outcome.  
+```{r prep for regression}
+# Integrate the datasets (genera abundance + metadata)
+  ## rf -- categorical
+    #colnames(microbiota_tbl_rf)
+    data_regress_rf_cat <- microbiota_tbl_rf %>% 
+                           select(rf_cat_top20,  
+                                   SampleID_NPA) %>%   # Don't change the order
+                           inner_join(., metadata_pam, by="SampleID_NPA")  
+    #colnames(data_regress_rf_cat) # 1-20 columns should be genera for the regression loop
+  ## rf -- cont
+    data_regress_rf_cont <- microbiota_tbl_rf %>% 
+                            select(rf_cont_top20,  
+                                   SampleID_NPA) %>%   # Don't change the order
+                            inner_join(., metadata_pam, by="SampleID_NPA")  
+    #colnames(data_regress_rf_cont) # 1-20 columns should be genera for the regression loop
+  # Decide 1) loading and 2) dataset to regress below
+    loading <- rf_cont_top20
+    data_regress <-data_regress_rf_cont
+```
+
+##18.1. Linear correlation between total 25OHD level and each of the 20 genera selected from rf 
+```{r Linear regression}
+        coef_lm    <- numeric(length(loading))
+        se_lm      <- numeric(length(loading))
+        p.value_lm <- numeric(length(loading))
+  for (i in seq_along(loading)){
+       fit <- lm(vitd25_ngml ~ data_regress[[i]], 
+                 data=data_regress)  #1-20 are metabolites
+       coef_lm[i]    <- summary(fit)$coefficients[2,1]  # Summary of 2nd row + 1st column = coef 
+       se_lm[i]      <- summary(fit)$coefficients[2,2]  # Summary of 2nd row + 1st column = se 
+       p.value_lm[i] <- summary(fit)$coefficients[2,4]  # Summary of 2nd row + 1st column = p-value 
+        }
+      
+      output_lm <- cbind(loading, coef_lm, se_lm, p.value_lm) %>% tbl_df()
+      output_lm$coef_lm    <- as.numeric(output_lm$coef_lm) %>% round (., digits =2)
+      output_lm$se_lm      <- as.numeric(output_lm$se_lm) %>% round (., digits =2)
+      output_lm$p.value_lm <- as.numeric(output_lm$p.value_lm)
+      output_lm$fdr_p <- as.numeric(output_lm$p.value_lm) %>% p.adjust(., "fdr") %>% round(., digits=4)
+      output_lm$p.value_lm <- output_lm$p.value_lm %>% round(., digits=4)
+
+  output_lm; 
+  output_lm %>% filter(., p.value_lm <0.05) 
+```
+
+##18.2. Multivariable logistric regression adjusted for potential confounders 
 ```{r}
-
+        est_logit <- numeric(length(loading))
+        se_logit  <- numeric(length(loading))
+        p.value_logit <- numeric(length(loading))
+for (i in seq_along(loading)){
+    fit <- glm(IntensiveTreatment ~ data_regress[[i]] 
+                 #+ Agecat2 
+                 #+ female  
+                 #+ raceethn 
+                 #+ premature37
+                 #+ breastmilk_mostly_3mo9 
+                 #+ intch_weight_cat2 
+                 #+ corticosteroids_pre
+                 #+ RSV + RV  #+ vitd25_ngml
+                 , family=binomial, data=data_regress)  
+              est_logit[i] <- summary(fit)$coefficients[2,1]  # Needs to be exponentiated!
+              se_logit[i]  <- summary(fit)$coefficients[2,2]  # Needs to be exponentiated!
+              p.value_logit[i] <- summary(fit)$coefficients[2,4]
+              }
+    output_logit <- cbind(loading, 
+                          OR=exp(est_logit), LL=exp(est_logit-1.96*se_logit), UL=exp(est_logit+1.96*se_logit), 
+                          p.value_logit) %>%
+                          tbl_df()
+          output_logit$OR    <- as.numeric(output_logit$OR ) %>% round (., digits =2)
+          output_logit$LL    <- as.numeric(output_logit$LL ) %>% round (., digits =2)
+          output_logit$UL    <- as.numeric(output_logit$UL ) %>% round (., digits =2)      
+          output_logit$fdr_p <- as.numeric(output_logit$p.value_logit) %>% p.adjust(., "fdr") %>% round(., digits=3)
+          output_logit$p.value_logit <-as.numeric(output_logit$p.value_logit) %>% round(., digits=3)
+    output_logit
+    output_logit %>% filter(., fdr_p <=0.05) 
 ```
 
-
-
+##18.3. Rondom-effects models adjusting for the covariates above and accounting for potential patient clustering within the hospitals.
+```{r Random-effects}
+      library("lme4"); 
+              est_logit_ad <- numeric(length(loading))
+              se_logit_ad  <- numeric(length(loading))
+              p.value_logit_ad <- numeric(length(loading))
+  for (i in seq_along(loading)){
+        fit2 <- glmer(CPAPintubate ~ data_regress[[i]] 
+                 + Agecat2 
+                 + female 
+                 + raceethn 
+                 + premature37
+                 + breastmilk_mostly_3mo9 
+                 + intch_weight_cat2 
+                 #+ corticosteroids_pre
+                 + RSV + RV  #+ vitd25_ngml
+                     + (1 | site),
+                      family=binomial, data=data_regress,
+                      control = glmerControl(optimizer = "bobyqa"))  
+              est_logit_ad[i] <- summary(fit2)$coefficients[2,1]  # Needs to be exponentiated!
+              se_logit_ad[i]  <- summary(fit2)$coefficients[2,2]  # Needs to be exponentiated!
+              p.value_logit_ad[i] <- summary(fit2)$coefficients[2,4]
+            }
+      adj_output_logit <- cbind(loading, 
+                                OR=exp(est_logit_ad), LL=exp(est_logit_ad-1.96*se_logit_ad), 
+                                UL=exp(est_logit_ad+1.96*se_logit_ad), 
+                                p.value_logit_ad) %>%
+                                tbl_df()
+          adj_output_logit$OR    <- as.numeric(adj_output_logit$OR) %>% round (., digits =2)
+          adj_output_logit$LL    <- as.numeric(adj_output_logit$LL) %>% round (., digits =2)
+          adj_output_logit$UL    <- as.numeric(adj_output_logit$UL) %>% round (., digits =2)      
+          adj_output_logit$fdr_p <- as.numeric(adj_output_logit$p.value_logit_ad) %>% p.adjust(., "fdr") %>% round(., digits=4)
+          adj_output_logit$p.value_logit_ad <-as.numeric(adj_output_logit$p.value_logit_ad) %>% round(., digits=4)
+   adj_output_logit
+   adj_output_logit %>% filter(., fdr_p <0.05) 
+```
 
