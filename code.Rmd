@@ -369,7 +369,7 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 
 ## 6. Table 1 
 ```{r Table 1, eval=TRUE}
-    #colnames(metadata_pam)
+    colnames(metadata_pam)
     table1_tb <- metadata_pam %>% select (-c(intake_sex, HRV, genotype_RV, PAM4))  # For Table 1, remove some variables
     vars <- names(table1_tb)[-1]
     table1<-CreateTableOne(vars = vars, strata = c("vitd25_ngml_cat2"), 
@@ -400,6 +400,104 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 
 ```                     
   In Table 1, between the low and high total 25OH groups, there are significant differences in severity, alpha-diversity measures, and microbiota profiles (in PAM clusters that were developed previously -- see Hasegawa et at. Eur Respir J 2016).
+
+
+
+## Interactions
+```{r}
+table1_tb$PAM4_m35 <- as.factor(table1_tb$PAM4_m35)
+class(table1_tb$PAM4_m35)
+table1_tb$PAM4_m35 <- relevel (table1_tb$PAM4_m35, "Moraxella dominant") 
+
+# Covariates to consider
+# + Agecat3 + female + raceethn
+# + premature37 
+# + mata_delivery
+# + prev_breathingprob2 +intake_daycare +children_home2 
+# + breastmilk_mostly_3mo
+# + antibiotics_life + corticosteroids_life + intch_antibiotics_ed  
+# + RSV_NPA + RV_NPA
+# + LL37_ngml2
+
+
+# No interaction model
+  model_no_int <- glmer (IntensiveTreatment ~ PAM4_m35
+                         + Age_mo + female  + raceethn 
+                         + premature37
+                         + breastmilk_mostly_3mo9 
+                         + intch_weight_cat2 
+                         + corticosteroids_pre
+                         + RSV + RV 
+                         + LL37_ngml
+                         + (1 | site),
+                         family=binomial, 
+                         data=table1_tb,
+                         control = glmerControl(optimizer = "bobyqa"))  
+# Interaction model
+  model_int <- glmer (IntensiveTreatment ~ PAM4_m35
+                                    + PAM4_m35:vitd25_ngml
+                                    + vitd25_ngml
+                         + Age_mo + female  + raceethn 
+                         + premature37
+                         + breastmilk_mostly_3mo9 
+                         + intch_weight_cat2 
+                         + corticosteroids_pre
+                         + RSV + RV 
+                         + LL37_ngml
+                         + (1 | site),
+                         family=binomial, 
+                         data=table1_tb,
+                         control = glmerControl(optimizer = "bobyqa"))  
+# Calculate LR
+G2 = -2 * logLik(model_no_int) + 2 * logLik(model_int)
+pchisq(as.numeric(G2), df=3, lower.tail=F)  # If we use 25OHD as a binomal variable, df = 7 (limited power).
+
+```
+Stratification -- low total 25OHD
+```{r}
+# Data limited to LOW LL-RANTES group
+   low_tbl <- filter(table1_tb, vitd25_ngml_cat2=="Low (<26.5 ng/ml)")
+   dim(low_tbl)  
+
+# Logistric regression
+  # Adjusted
+  library("lme4")
+    mdl_random <- glmer (IntensiveTreatment ~ PAM4_m35
+                                  
+                                     + (1 | site),
+                                     family=binomial, 
+                                     data=low_tbl,
+                                     control = glmerControl(optimizer = "bobyqa"))   
+                #print(mdl_random, corr=FALSE)  
+                      summary(mdl_random) #get p value
+                #Estimate 95%CI
+                      se <- sqrt(diag(vcov(mdl_random)))
+                # table of estimates with 95% CI
+                      (ORCI <- cbind(Est = fixef(mdl_random), 
+                                     LL = fixef(mdl_random) - 1.96 * se, 
+                                     UL = fixef(mdl_random) + 1.96 * se))
+                      exp(ORCI)
+                      
+
+                  
+
+```
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ## 7. Prepation for the analysis using MixOmics 
@@ -938,7 +1036,9 @@ library(randomForest); library(caret)
   Imp_variables_cat_df <- as.data.frame(Imp_variables_cat[1])
   Imp_variables_cat_df$variable_rf_cat <- rownames(Imp_variables_cat_df)
 # Create a vector of the top 20 genera
-  rf_cat_top20 <- Imp_variables_cat_df %>% arrange(desc(Overall)) %>% .[1:20, "variable_rf_cat"]
+  head(Imp_variables_cat_df)
+  
+  rf_cat_top20 <- Imp_variables_cat_df %>% arrange(desc(importance.High....26.5.ng.ml.)) %>% .[1:20, "variable_rf_cat"]
   rf_cat_top20
 ```
 
@@ -1002,12 +1102,21 @@ library(randomForest); library(caret)
         se_lm      <- numeric(length(loading))
         p.value_lm <- numeric(length(loading))
   for (i in seq_along(loading)){
-       fit <- lm(vitd25_ngml ~ data_regress[[i]], 
+       fit <- lm(vitd25_ngml ~ data_regress[[i]]
+                 #+ Agecat2 
+                 #+ female  
+                 #+ raceethn 
+                 #+ premature37
+                 #+ breastmilk_mostly_3mo9 
+                 #+ intch_weight_cat2 
+                 #+ corticosteroids_pre
+                 #+ RSV + RV  #+ vitd25_ngml
+                 , 
                  data=data_regress)  #1-20 are metabolites
        coef_lm[i]    <- summary(fit)$coefficients[2,1]  # Summary of 2nd row + 1st column = coef 
        se_lm[i]      <- summary(fit)$coefficients[2,2]  # Summary of 2nd row + 1st column = se 
        p.value_lm[i] <- summary(fit)$coefficients[2,4]  # Summary of 2nd row + 1st column = p-value 
-        }
+      }
       
       output_lm <- cbind(loading, coef_lm, se_lm, p.value_lm) %>% tbl_df()
       output_lm$coef_lm    <- as.numeric(output_lm$coef_lm) %>% round (., digits =2)
@@ -1026,15 +1135,15 @@ library(randomForest); library(caret)
         se_logit  <- numeric(length(loading))
         p.value_logit <- numeric(length(loading))
 for (i in seq_along(loading)){
-    fit <- glm(IntensiveTreatment ~ data_regress[[i]] 
-                 #+ Agecat2 
-                 #+ female  
-                 #+ raceethn 
-                 #+ premature37
-                 #+ breastmilk_mostly_3mo9 
-                 #+ intch_weight_cat2 
-                 #+ corticosteroids_pre
-                 #+ RSV + RV  #+ vitd25_ngml
+    fit <- glm(CPAPintubate ~ data_regress[[i]] # IntensiveTreatment or CPAPintubate
+                 + Agecat2 
+                 + female  
+                 + raceethn 
+                 + premature37
+                 + breastmilk_mostly_3mo9 
+                 + intch_weight_cat2 
+                 + corticosteroids_pre
+                 + RSV + RV  #+ vitd25_ngml
                  , family=binomial, data=data_regress)  
               est_logit[i] <- summary(fit)$coefficients[2,1]  # Needs to be exponentiated!
               se_logit[i]  <- summary(fit)$coefficients[2,2]  # Needs to be exponentiated!
@@ -1060,8 +1169,8 @@ for (i in seq_along(loading)){
               se_logit_ad  <- numeric(length(loading))
               p.value_logit_ad <- numeric(length(loading))
   for (i in seq_along(loading)){
-        fit2 <- glmer(CPAPintubate ~ data_regress[[i]] 
-                 + Agecat2 
+        fit2 <- glmer(IntensiveTreatment ~ data_regress[[i]] # IntensiveTreatment or CPAPintubate
+                 + Agecat2  
                  + female 
                  + raceethn 
                  + premature37
