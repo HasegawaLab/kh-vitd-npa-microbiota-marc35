@@ -216,6 +216,12 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
     #Post-natal smoking exposure
         metadata_pam$intake_smoke <- factor(metadata_pam$intake_smoke)    
             table(metadata_pam$intake_smoke, useNA="ifany"); class(metadata_pam$intake_smoke) 
+    # Siblings
+        metadata_pam$children_home2 <-NA
+        metadata_pam$children_home2[metadata_pam$numb_children_home==0] <-FALSE
+        metadata_pam$children_home2[metadata_pam$numb_children_home!=0] <-TRUE
+            table(metadata_pam$children_home2, useNA="ifany"); class(metadata_pam$children_home2)           
+            
     # breastmilk_mostly_3mo (10 missing)
         metadata_pam$breastmilk_mostly_3mo <- factor(metadata_pam$breastmilk_mostly_3mo)    
             table(metadata_pam$breastmilk_mostly_3mo, useNA="ifany"); class(metadata_pam$breastmilk_mostly_3mo)            
@@ -242,8 +248,7 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                     NA))
             metadata_pam$intch_weight_cat2 <- as.factor(metadata_pam$intch_weight_cat2)
             table(metadata_pam$intch_weight_cat2, useNA="ifany"); class(metadata_pam$intch_weight_cat2)
-            
-            
+          
     # sIgE (food or aero)
         metadata_pam$IgE_any_food <- as.factor(metadata_pam$IgE_any_food)   
             table(metadata_pam$IgE_any_food, useNA="ifany"); class(metadata_pam$IgE_any_food)  
@@ -340,7 +345,15 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                     ifelse(metadata_pam$dbp_ugml>=143.3, "High (>=143.3 ug/ml)",
                     NA))
             metadata_pam$dbp2 <- as.factor(metadata_pam$dbp2)
-            table(metadata_pam$dbp2, useNA="ifany"); class(metadata_pam$dbp2)      
+            table(metadata_pam$dbp2, useNA="ifany"); class(metadata_pam$dbp2) 
+   # LL-37
+        summary(metadata_pam$LL37_ngml)   
+                metadata_pam$LL37_ngml2 = 
+                    ifelse(metadata_pam$LL37_ngml <46,  "Low (<46 ng/ml)",
+                    ifelse(metadata_pam$LL37_ngml>=46, "High (>=46 ng/ml)",
+                    NA))
+            metadata_pam$LL37_ngm2 <- as.factor(metadata_pam$LL37_ngml2)
+            table(metadata_pam$LL37_ngm2, useNA="ifany"); class(metadata_pam$LL37_ngml2)  
 ```
                         
 ## 5. Exploratory analysis: Correlations of total 25OHD with free and bioavailable 25OHD
@@ -379,7 +392,7 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                                          "birth_season", 
                                          "premature37","intake_child_weight_born", "mata_delivery",
                                          "prev_breathingprob2", "intake_eczema_history",
-                                         "intake_smoke", "intake_daycare", "breastmilk_mostly_3mo",
+                                         "intake_smoke", "intake_daycare", "children_home2","breastmilk_mostly_3mo",
                                          "corticosteroids_life", "corticosteroids_pre",
                                          "IgE_cat2", "IgE_any_food", "aeroallergens_atopy","eos_4perc",
                                          "RSVonly", "RVonly", "OTHERvirus",
@@ -388,11 +401,11 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
                                          "o2sat_initial", 
                                          "CPAPintubate", "inpatient_location___3","IntensiveTreatment", "LOS3dys",
                                          "recurrent_wheeze_sleep_36mo_cat", "ICSuse_36mo_cat",
-                                         "vitd25_ngml_cat2", "bioD2", "freeD2"
+                                         "vitd25_ngml_cat2", "bioD2", "freeD2", "LL37_ngml2"
                                          ))
           print(table1, nonnormal = c("Age_mo", "intch_weight","LOS_dys",
                                        "intch_respiratory_rate",
-                                      "RANTES_pgml","LL37_ngml", "vitd25_ngml", "bioD", "freeD", "dbp_ugml", 
+                                      "RANTES_pgml","LL37_ngml", "vitd25_ngml", "bioD", "freeD", "dbp_ugml", "LL37_ngml",
                                       "RWsleep_time2event_36mo", "ICS_time2event_36mo"),
                             #exact = c("site"), 
                             smd = FALSE,
@@ -403,68 +416,74 @@ unique(metadata_pam$SampleID_NPA == rownames(microbiota_tbl)) # TRUE
 
 
 
-## Interactions
-```{r}
+
+
+#7 Interactions between 25OHD and microbiota with regard to severity
+## As random-effect model for the interactions does not converge -- fixed glm fitted.
+```{r Interactions}
 table1_tb$PAM4_m35 <- as.factor(table1_tb$PAM4_m35)
-class(table1_tb$PAM4_m35)
 table1_tb$PAM4_m35 <- relevel (table1_tb$PAM4_m35, "Moraxella dominant") 
 
-# Covariates to consider
-# + Agecat3 + female + raceethn
-# + premature37 
-# + mata_delivery
-# + prev_breathingprob2 +intake_daycare +children_home2 
-# + breastmilk_mostly_3mo
-# + antibiotics_life + corticosteroids_life + intch_antibiotics_ed  
-# + RSV_NPA + RV_NPA
-# + LL37_ngml2
-
-
 # No interaction model
-  model_no_int <- glmer (IntensiveTreatment ~ PAM4_m35
+  model_no_int <- glm (IntensiveTreatment ~ PAM4_m35
                          + Age_mo + female  + raceethn 
                          + premature37
+                         # + mata_delivery
+                         + prev_breathingprob2
+                         + children_home2 
                          + breastmilk_mostly_3mo9 
-                         + intch_weight_cat2 
-                         + corticosteroids_pre
+                         # +intake_daycare  #+ intch_weight_cat2 
+                         #+ antibiotics_life
+                         + intch_antibiotics_ed 
                          + RSV + RV 
-                         + LL37_ngml
-                         + (1 | site),
+                         + LL37_ngml,  # LL-37 may be an intermediate of vitD-severity association
                          family=binomial, 
-                         data=table1_tb,
-                         control = glmerControl(optimizer = "bobyqa"))  
+                         data=table1_tb)
 # Interaction model
-  model_int <- glmer (IntensiveTreatment ~ PAM4_m35
+  model_int <- glm (IntensiveTreatment ~ PAM4_m35
                                     + PAM4_m35:vitd25_ngml
                                     + vitd25_ngml
                          + Age_mo + female  + raceethn 
                          + premature37
+                         # + mata_delivery
+                         + prev_breathingprob2
+                         + children_home2 
                          + breastmilk_mostly_3mo9 
-                         + intch_weight_cat2 
-                         + corticosteroids_pre
+                         # +intake_daycare  #+ intch_weight_cat2 
+                         #+ antibiotics_life
+                         + intch_antibiotics_ed 
                          + RSV + RV 
-                         + LL37_ngml
-                         + (1 | site),
+                         + LL37_ngml,
                          family=binomial, 
-                         data=table1_tb,
-                         control = glmerControl(optimizer = "bobyqa"))  
+                         data=table1_tb)  
+  
 # Calculate LR
-G2 = -2 * logLik(model_no_int) + 2 * logLik(model_int)
-pchisq(as.numeric(G2), df=3, lower.tail=F)  # If we use 25OHD as a binomal variable, df = 7 (limited power).
-
+  G2 = -2 * logLik(model_no_int) + 2 * logLik(model_int)
+  pchisq(as.numeric(G2), df=3, lower.tail=F)  # If we use 25OHD as a binomal variable, df would become 7 (= reduced power).
 ```
-Stratification -- low total 25OHD
-```{r}
+
+
+#7-1. Stratification -- low total 25OHD stratum -- Significant associations b/w microbiota profile and severity
+```{r Low 25OHD stratum}
 # Data limited to LOW LL-RANTES group
    low_tbl <- filter(table1_tb, vitd25_ngml_cat2=="Low (<26.5 ng/ml)")
    dim(low_tbl)  
 
 # Logistric regression
-  # Adjusted
-  library("lme4")
+library("lme4")
     mdl_random <- glmer (IntensiveTreatment ~ PAM4_m35
-                                  
-                                     + (1 | site),
+                         + Age_mo + female  + raceethn 
+                         + premature37
+                         # + mata_delivery
+                         + prev_breathingprob2
+                         + children_home2 
+                         + breastmilk_mostly_3mo9 
+                         # +intake_daycare  #+ intch_weight_cat2     # Wt is has collinearity with age.
+                         #+ antibiotics_life
+                         + intch_antibiotics_ed 
+                         + RSV + RV 
+                         + LL37_ngml         
+                         + (1 | site),
                                      family=binomial, 
                                      data=low_tbl,
                                      control = glmerControl(optimizer = "bobyqa"))   
@@ -477,14 +496,41 @@ Stratification -- low total 25OHD
                                      LL = fixef(mdl_random) - 1.96 * se, 
                                      UL = fixef(mdl_random) + 1.96 * se))
                       exp(ORCI)
-                      
-
-                  
 
 ```
 
-```{r}
+#7-2. Stratification -- High total 25OHD stratum -- NO significant associations b/w microbiota profile and severity
+```{r High 25OHD straturm}
+# Data limited to LOW LL-RANTES group
+   high_tbl <- filter(table1_tb, vitd25_ngml_cat2 != "Low (<26.5 ng/ml)")
+   dim(high_tbl)  
 
+# Logistric regression
+    mdl_random <- glmer (IntensiveTreatment ~ PAM4_m35
+                         + Age_mo + female  + raceethn 
+                         + premature37
+                         # + mata_delivery
+                         + prev_breathingprob2
+                         + children_home2 
+                         + breastmilk_mostly_3mo9 
+                         # +intake_daycare  #+ intch_weight_cat2 
+                         #+ antibiotics_life
+                         + intch_antibiotics_ed 
+                         + RSV + RV 
+                         + LL37_ngml         
+                         + (1 | site),
+                                     family=binomial, 
+                                     data=high_tbl,
+                                     control = glmerControl(optimizer = "bobyqa"))   
+                #print(mdl_random, corr=FALSE)  
+                      summary(mdl_random) #get p value
+                #Estimate 95%CI
+                      se <- sqrt(diag(vcov(mdl_random)))
+                # table of estimates with 95% CI
+                      (ORCI <- cbind(Est = fixef(mdl_random), 
+                                     LL = fixef(mdl_random) - 1.96 * se, 
+                                     UL = fixef(mdl_random) + 1.96 * se))
+                      exp(ORCI)
 ```
 
 
@@ -500,7 +546,7 @@ Stratification -- low total 25OHD
 
 
 
-## 7. Prepation for the analysis using MixOmics 
+## 8-0. Prepation for the analysis using MixOmics 
 ```{r Prep for MixOmics}
 #1 X = microbiota data (X should be matrix)
   dataMatrix <- as.matrix(microbiota_tbl)
